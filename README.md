@@ -27,6 +27,44 @@ A lightweight, client-side expense tracker built with React and Vite. All data i
 | localStorage | Client-side data persistence |
 | CSS (custom) | Styling |
 
+## Supabase Setup
+
+### 1. Create a Supabase project
+1. Go to [supabase.com](https://supabase.com) → **New project**
+2. Note your **Project URL** and **anon public key** (Settings → API)
+
+### 2. Create the `expenses` table
+Run this SQL in **Supabase → SQL Editor**:
+
+```sql
+create table expenses (
+  id          uuid primary key default gen_random_uuid(),
+  amount      numeric          not null,
+  category    text             not null,
+  date        date             not null,
+  notes       text             not null,
+  created_at  timestamptz      not null default now()
+);
+
+-- Allow public read/write (no auth required)
+alter table expenses enable row level security;
+create policy "Allow all" on expenses for all using (true) with check (true);
+```
+
+### 3. Add your API keys
+Copy `.env.example` to `.env` and fill in your credentials:
+
+```bash
+cp .env.example .env
+```
+
+```env
+VITE_SUPABASE_URL=https://your-project-id.supabase.co
+VITE_SUPABASE_ANON_KEY=your-anon-public-key-here
+```
+
+> `.env` is gitignored and will never be committed.
+
 ## Getting Started
 
 ```bash

@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
+import { supabase } from "./supabaseClient";
 
 const CATEGORIES = [
   { id: "food", label: "Food & Dining", icon: "🍽️", color: "#ff8a65" },
@@ -36,6 +37,15 @@ const todayISO = () => new Date().toISOString().split("T")[0];
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
+// Maps a Supabase DB row → internal app shape (DB uses `notes`, app uses `description`)
+const mapRow = (row) => ({
+  id: row.id,
+  amount: parseFloat(row.amount),
+  description: row.notes,
+  category: row.category,
+  date: row.date,
+});
+
 const buildPieGradient = (items) => {
   if (!items.length) return "conic-gradient(rgba(148, 163, 184, 0.18) 0 100%)";
   const total = items.reduce((sum, item) => sum + item.total, 0);
@@ -50,13 +60,10 @@ const buildPieGradient = (items) => {
 };
 
 export default function App() {
-  const [expenses, setExpenses] = useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem("expenses") || "[]");
-    } catch {
-      return [];
-    }
-  });
+  // Supabase: expenses are loaded from the DB, not localStorage
+  const [expenses, setExpenses] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [dbError, setDbError] = useState(null);
   const [view, setView] = useState("dashboard");
   const [form, setForm] = useState({ amount: "", description: "", category: "food", date: todayISO() });
   const [editId, setEditId] = useState(null);
@@ -67,38 +74,70 @@ export default function App() {
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [searchQ, setSearchQ] = useState("");
 
-  useEffect(() => {
-    localStorage.setItem("expenses", JSON.stringify(expenses));
-  }, [expenses]);
-
+  // Keep currency preference in localStorage
   useEffect(() => {
     localStorage.setItem("expenseCurrency", currency);
   }, [currency]);
+
+  // Supabase: fetch all expenses, ordered newest first
+  const fetchExpenses = async () => {
+    setLoading(true);
+    setDbError(null);
+    const { data, error } = await supabase
+      .from("expenses")
+      .select("*")
+      .order("created_at", { ascending: false });
+    if (error) {
+      setDbError(error.message);
+    } else {
+      setExpenses(data.map(mapRow));
+    }
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    fetchExpenses();
+  }, []);
 
   const showToast = (msg, type = "success") => {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 2800);
   };
 
-  const saveExpense = () => {
+  // Supabase: insert new or update existing expense
+  const saveExpense = async () => {
     const amount = parseFloat(form.amount);
     if (!amount || amount <= 0 || !form.description.trim()) {
       showToast("Please fill in amount and description.", "error");
       return;
     }
     if (editId) {
+      const { error } = await supabase
+        .from("expenses")
+        .update({ amount, category: form.category, date: form.date, notes: form.description })
+        .eq("id", editId);
+      if (error) { showToast("Failed to update expense.", "error"); return; }
       setExpenses((prev) => prev.map((e) => (e.id === editId ? { ...e, ...form, amount } : e)));
       showToast("Expense updated!");
       setEditId(null);
     } else {
-      setExpenses((prev) => [{ id: Date.now().toString(), ...form, amount }, ...prev]);
+      const { data, error } = await supabase
+        .from("expenses")
+        .insert({ amount, category: form.category, date: form.date, notes: form.description })
+        .select()
+        .single();
+      if (error) { showToast("Failed to add expense.", "error"); return; }
+      setExpenses((prev) => [mapRow(data), ...prev]);
       showToast("Expense added!");
     }
     setForm({ amount: "", description: "", category: "food", date: todayISO() });
     setView("dashboard");
   };
 
-  const deleteExpense = (id) => {
+  // Supabase: delete expense by id
+  const deleteExpense = async (id) => {
+    const { error } = await supabase.from("expenses").delete().eq("id", id);
+    if (error) { showToast("Failed to delete expense.", "error"); setDeleteConfirm(null); return; }
     setExpenses((prev) => prev.filter((e) => e.id !== id));
     setDeleteConfirm(null);
     showToast("Expense deleted.", "info");
@@ -281,6 +320,14 @@ export default function App() {
       </header>
 
       <main className="main">
+        {/* Supabase: loading and error states */}
+        {loading && <div className="db-loading">Loading expenses…</div>}
+        {!loading && dbError && (
+          <div className="db-error">
+            Could not load data — {dbError}.
+            <button className="link" onClick={fetchExpenses}> Retry</button>
+          </div>
+        )}
         {view === "dashboard" && (
           <div className="page">
             <section className="hero-card">

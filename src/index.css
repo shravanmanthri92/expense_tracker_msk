@@ -330,6 +330,20 @@ select.form-input option { color: #111827; }
 .empty { color: var(--text3); font-size: 14px; padding: 12px 0; }
 .link { background: none; border: none; color: #93c5fd; cursor: pointer; font: inherit; font-weight: 700; text-decoration: underline; }
 
+/* Supabase loading / error states */
+.db-loading {
+  text-align: center; padding: 64px 24px;
+  color: var(--text3); font-size: 15px; font-weight: 600;
+  animation: fadeIn 0.4s ease;
+}
+.db-error {
+  background: rgba(127,29,29,0.35); border: 1px solid #7f1d1d;
+  color: #fca5a5; border-radius: 14px;
+  padding: 14px 20px; margin-bottom: 24px;
+  font-size: 14px; font-weight: 600;
+}
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
 @media (max-width: 900px) {
   .hero-card, .dashboard-grid, .two-col { grid-template-columns: 1fr; }
   .hero-title { max-width: 100%; }

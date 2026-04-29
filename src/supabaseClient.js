@@ -1,0 +1,13 @@
+import { createClient } from "@supabase/supabase-js";
+
+// Read credentials from .env (VITE_ prefix exposes them to the browser via Vite)
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+if (!supabaseUrl || !supabaseAnonKey) {
+  throw new Error(
+    "Missing Supabase env vars. Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to your .env file."
+  );
+}
+
+export const supabase = createClient(supabaseUrl, supabaseAnonKey);
