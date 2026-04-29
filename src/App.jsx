@@ -284,7 +284,7 @@ export default function App() {
 
       <header className="header">
         <div className="header-inner">
-          <div className="logo-wrap">
+          <div className="logo-wrap" onClick={() => { if (editId) cancelEdit(); setView("dashboard"); }} style={{ cursor: "pointer" }}>
             <div className="logo">
               <span className="logo-icon">
                 <svg width="30" height="24" viewBox="0 0 30 24" xmlns="http://www.w3.org/2000/svg">
