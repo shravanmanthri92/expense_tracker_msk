@@ -8,7 +8,8 @@ const CATEGORIES = [
   { id: "health", label: "Health", icon: "💊", color: "#34d399" },
   { id: "entertainment", label: "Entertainment", icon: "🎬", color: "#fbbf24" },
   { id: "utilities", label: "Utilities", icon: "💡", color: "#94a3b8" },
-  { id: "rent", label: "Rent/Housing", icon: "🏠", color: "#fb7185" },
+  { id: "rent", label: "Rent/Home Loan", icon: "🏠", color: "#fb7185" },
+  { id: "groceries", label: "Groceries", icon: "🛒", color: "#4ade80" },
   { id: "other", label: "Other", icon: "📦", color: "#a1a1aa" },
 ];
 
@@ -44,6 +45,7 @@ const mapRow = (row) => ({
   description: row.notes,
   category: row.category,
   date: row.date,
+  spentBy: row.spent_by || "Shravan",
 });
 
 const buildPieGradient = (items) => {
@@ -64,11 +66,13 @@ export default function App() {
   const [expenses, setExpenses] = useState([]);
   const [loading, setLoading] = useState(true);
   const [dbError, setDbError] = useState(null);
+  const [isSaving, setIsSaving] = useState(false);
   const [view, setView] = useState("dashboard");
-  const [form, setForm] = useState({ amount: "", description: "", category: "food", date: todayISO() });
+  const [form, setForm] = useState({ amount: "", description: "", category: "food", date: todayISO(), spentBy: "Shravan" });
   const [editId, setEditId] = useState(null);
   const [filterCat, setFilterCat] = useState("all");
   const [filterMonth, setFilterMonth] = useState("all");
+  const [filterSpentBy, setFilterSpentBy] = useState("all");
   const [toast, setToast] = useState(null);
   const [currency, setCurrency] = useState(() => localStorage.getItem("expenseCurrency") || "USD");
   const [deleteConfirm, setDeleteConfirm] = useState(null);
@@ -111,47 +115,51 @@ export default function App() {
       showToast("Please fill in amount and description.", "error");
       return;
     }
+    setIsSaving(true);
     if (editId) {
       const { error } = await supabase
         .from("expenses")
-        .update({ amount, category: form.category, date: form.date, notes: form.description })
+        .update({ amount, category: form.category, date: form.date, notes: form.description, spent_by: form.spentBy })
         .eq("id", editId);
-      if (error) { showToast("Failed to update expense.", "error"); return; }
+      if (error) { showToast("Failed to update expense.", "error"); setIsSaving(false); return; }
       setExpenses((prev) => prev.map((e) => (e.id === editId ? { ...e, ...form, amount } : e)));
       showToast("Expense updated!");
       setEditId(null);
     } else {
       const { data, error } = await supabase
         .from("expenses")
-        .insert({ amount, category: form.category, date: form.date, notes: form.description })
+        .insert({ amount, category: form.category, date: form.date, notes: form.description, spent_by: form.spentBy })
         .select()
         .single();
-      if (error) { showToast("Failed to add expense.", "error"); return; }
+      if (error) { showToast("Failed to add expense.", "error"); setIsSaving(false); return; }
       setExpenses((prev) => [mapRow(data), ...prev]);
       showToast("Expense added!");
     }
-    setForm({ amount: "", description: "", category: "food", date: todayISO() });
+    setIsSaving(false);
+    setForm({ amount: "", description: "", category: "food", date: todayISO(), spentBy: "Shravan" });
     setView("dashboard");
   };
 
   // Supabase: delete expense by id
   const deleteExpense = async (id) => {
+    setIsSaving(true);
     const { error } = await supabase.from("expenses").delete().eq("id", id);
-    if (error) { showToast("Failed to delete expense.", "error"); setDeleteConfirm(null); return; }
+    if (error) { showToast("Failed to delete expense.", "error"); setDeleteConfirm(null); setIsSaving(false); return; }
     setExpenses((prev) => prev.filter((e) => e.id !== id));
     setDeleteConfirm(null);
+    setIsSaving(false);
     showToast("Expense deleted.", "info");
   };
 
   const startEdit = (e) => {
-    setForm({ amount: String(e.amount), description: e.description, category: e.category, date: e.date });
+    setForm({ amount: String(e.amount), description: e.description, category: e.category, date: e.date, spentBy: e.spentBy || "Shravan" });
     setEditId(e.id);
     setView("add");
   };
 
   const cancelEdit = () => {
     setEditId(null);
-    setForm({ amount: "", description: "", category: "food", date: todayISO() });
+    setForm({ amount: "", description: "", category: "food", date: todayISO(), spentBy: "Shravan" });
     setView("history");
   };
 
@@ -218,15 +226,16 @@ export default function App() {
     return expenses.filter((e) => {
       if (filterCat !== "all" && e.category !== filterCat) return false;
       if (filterMonth !== "all" && !e.date.startsWith(filterMonth)) return false;
+      if (filterSpentBy !== "all" && e.spentBy !== filterSpentBy) return false;
       if (searchQ && !e.description.toLowerCase().includes(searchQ.toLowerCase())) return false;
       return true;
     });
-  }, [expenses, filterCat, filterMonth, searchQ]);
+  }, [expenses, filterCat, filterMonth, filterSpentBy, searchQ]);
 
   const exportCSV = () => {
     const header = "Date,Description,Category,Amount\n";
     const rows = expenses
-      .map((e) => `${e.date},"${e.description}",${getCat(e.category).label},${e.amount}`)
+      .map((e) => `${e.date},"${e.description.replace(/"/g, '""')}","${getCat(e.category).label}",${e.amount}`)
       .join("\n");
     const blob = new Blob([header + rows], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
@@ -250,7 +259,7 @@ export default function App() {
     [last6Months]
   );
   const pieGradient = useMemo(() => buildPieGradient(allTimeCategoryTotals), [allTimeCategoryTotals]);
-  const filtersActive = filterCat !== "all" || filterMonth !== "all" || searchQ.trim() !== "";
+  const filtersActive = filterCat !== "all" || filterMonth !== "all" || filterSpentBy !== "all" || searchQ.trim() !== "";
 
   return (
     <div className="app">
@@ -265,8 +274,8 @@ export default function App() {
               <button className="btn btn-ghost" onClick={() => setDeleteConfirm(null)}>
                 Cancel
               </button>
-              <button className="btn btn-danger" onClick={() => deleteExpense(deleteConfirm)}>
-                Delete
+              <button className="btn btn-danger" onClick={() => deleteExpense(deleteConfirm)} disabled={isSaving}>
+                {isSaving ? "Deleting…" : "Delete"}
               </button>
             </div>
           </div>
@@ -277,10 +286,17 @@ export default function App() {
         <div className="header-inner">
           <div className="logo-wrap">
             <div className="logo">
-              <span className="logo-icon">◈</span>
+              <span className="logo-icon">
+                <svg width="30" height="24" viewBox="0 0 30 24" xmlns="http://www.w3.org/2000/svg">
+                  {/* N — anchored at bottom */}
+                  <text x="1" y="21" fontFamily="Inter, sans-serif" fontWeight="900" fontSize="19" fill="white">N</text>
+                  {/* S — raised 4px to create a staircase monogram feel */}
+                  <text x="16" y="17" fontFamily="Inter, sans-serif" fontWeight="900" fontSize="19" fill="rgba(255,255,255,0.88)">S</text>
+                </svg>
+              </span>
               <div>
-                <span className="logo-text">Spendly</span>
-                <span className="logo-sub">Personal expense dashboard</span>
+                <span className="logo-text">Nikhitha <span className="logo-heart">&amp;</span> Shravan</span>
+                <span className="logo-sub">Household Expense Tracker</span>
               </div>
             </div>
           </div>
@@ -328,14 +344,14 @@ export default function App() {
             <button className="link" onClick={fetchExpenses}> Retry</button>
           </div>
         )}
-        {view === "dashboard" && (
+        {!loading && view === "dashboard" && (
           <div className="page">
             <section className="hero-card">
               <div className="hero-copy">
-                <span className="eyebrow">Overview · {MONTHS[currentMonth]} {currentYear}</span>
-                <h1 className="hero-title">A cleaner way to track where your money goes.</h1>
+                <span className="eyebrow">🏡 Home · {MONTHS[currentMonth]} {currentYear}</span>
+                <h1 className="hero-title">Our home, Our money — tracked together.</h1>
                 <p className="hero-sub">
-                  Add expenses in seconds, review category trends, and keep your monthly spending visible at a glance.
+                  A shared space for Nikhitha &amp; Shravan to log expenses, spot trends, and stay on top of household spending — all in one place.
                 </p>
                 <div className="hero-actions">
                   <button className="btn btn-primary" onClick={() => setView("add")}>Add Expense</button>
@@ -343,6 +359,7 @@ export default function App() {
                 </div>
               </div>
               <div className="hero-panel">
+                <div className="hero-home-deco">🏡</div>
                 <div className="hero-panel-label">This month</div>
                 <div className="hero-panel-value">{fmt(totalThisMonth, currency)}</div>
                 <div className="hero-panel-meta">
@@ -408,6 +425,7 @@ export default function App() {
                             <span className="tx-desc">{e.description}</span>
                             <span className="tx-date">{fmtDate(e.date)} · {cat.label}</span>
                           </div>
+                          <span className={`spent-pill spent-${(e.spentBy || "shravan").toLowerCase()}`}>{e.spentBy || "Shravan"}</span>
                           <span className="tx-amount">{fmt(e.amount, currency)}</span>
                         </li>
                       );
@@ -446,7 +464,7 @@ export default function App() {
           </div>
         )}
 
-        {view === "add" && (
+        {!loading && view === "add" && (
           <div className="page page-narrow">
             <div className="page-header">
               <div>
@@ -505,14 +523,30 @@ export default function App() {
                 </div>
               </div>
 
-              <button className="btn btn-primary btn-full" onClick={saveExpense}>
-                {editId ? "Save Changes" : "Add Expense"}
+              <div className="form-group">
+                <label className="form-label">Spent by</label>
+                <div className="spentby-toggle">
+                  {[["Shravan", "✋"], ["Nikhitha", "👋"]].map(([person, emoji]) => (
+                    <button
+                      key={person}
+                      type="button"
+                      className={`spentby-btn spentby-${person.toLowerCase()}${form.spentBy === person ? " active" : ""}`}
+                      onClick={() => setForm((f) => ({ ...f, spentBy: person }))}
+                    >
+                      {emoji} {person}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <button className="btn btn-primary btn-full" onClick={saveExpense} disabled={isSaving}>
+                {isSaving ? "Saving…" : editId ? "Save Changes" : "Add Expense"}
               </button>
             </div>
           </div>
         )}
 
-        {view === "history" && (
+        {!loading && view === "history" && (
           <div className="page">
             <div className="page-header">
               <div>
@@ -532,8 +566,13 @@ export default function App() {
                 <option value="all">All months</option>
                 {availableMonths.map((m) => <option key={m} value={m}>{m}</option>)}
               </select>
+              <select className="form-input" value={filterSpentBy} onChange={(e) => setFilterSpentBy(e.target.value)}>
+                <option value="all">All members</option>
+                <option value="Shravan">✋ Shravan</option>
+                <option value="Nikhitha">👋 Nikhitha</option>
+              </select>
               {filtersActive && (
-                <button className="btn btn-ghost btn-reset" onClick={() => { setFilterCat("all"); setFilterMonth("all"); setSearchQ(""); }}>
+                <button className="btn btn-ghost btn-reset" onClick={() => { setFilterCat("all"); setFilterMonth("all"); setFilterSpentBy("all"); setSearchQ(""); }}>
                   Clear filters
                 </button>
               )}
@@ -553,6 +592,7 @@ export default function App() {
                           <span className="tx-desc">{e.description}</span>
                           <span className="tx-date">{fmtDate(e.date)} · {cat.label}</span>
                         </div>
+                        <span className={`spent-pill spent-${(e.spentBy || "shravan").toLowerCase()}`}>{e.spentBy || "Shravan"}</span>
                         <span className="tx-amount">{fmt(e.amount, currency)}</span>
                         <div className="tx-actions visible-actions">
                           <button className="icon-btn" title="Edit" onClick={() => startEdit(e)}>✏️</button>
@@ -567,7 +607,7 @@ export default function App() {
           </div>
         )}
 
-        {view === "analytics" && (
+        {!loading && view === "analytics" && (
           <div className="page">
             <div className="page-header">
               <div>
