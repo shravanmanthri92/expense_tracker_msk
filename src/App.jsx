@@ -1,6 +1,50 @@
 import { useState, useEffect, useMemo } from "react";
 import { supabase } from "./supabaseClient";
 
+const UNLOCK_KEY = "spendly_unlocked";
+const CORRECT_PASSWORD = import.meta.env.VITE_APP_PASSWORD;
+
+function PasswordGate({ children }) {
+  const [unlocked, setUnlocked] = useState(
+    () => sessionStorage.getItem(UNLOCK_KEY) === "1"
+  );
+  const [input, setInput] = useState("");
+  const [error, setError] = useState(false);
+
+  const attempt = () => {
+    if (input === CORRECT_PASSWORD) {
+      sessionStorage.setItem(UNLOCK_KEY, "1");
+      setUnlocked(true);
+    } else {
+      setError(true);
+      setInput("");
+    }
+  };
+
+  if (unlocked) return children;
+
+  return (
+    <div className="gate-overlay">
+      <div className="gate-card">
+        <div className="gate-logo">🏡</div>
+        <h1 className="gate-title">Spendly</h1>
+        <p className="gate-sub">Nikhitha &amp; Shravan's expense tracker</p>
+        <input
+          className={`form-input gate-input${error ? " gate-input-error" : ""}`}
+          type="password"
+          placeholder="Enter password"
+          value={input}
+          autoFocus
+          onChange={(e) => { setInput(e.target.value); setError(false); }}
+          onKeyDown={(e) => e.key === "Enter" && attempt()}
+        />
+        {error && <p className="gate-error">Incorrect password. Try again.</p>}
+        <button className="btn btn-primary gate-btn" onClick={attempt}>Unlock</button>
+      </div>
+    </div>
+  );
+}
+
 const CATEGORIES = [
   { id: "food", label: "Food & Dining", icon: "🍽️", color: "#ff8a65" },
   { id: "transport", label: "Transport", icon: "🚗", color: "#60a5fa" },
@@ -64,7 +108,15 @@ const buildPieGradient = (items) => {
   return `conic-gradient(${slices.join(", ")})`;
 };
 
-export default function App() {
+export default function SpendlyApp() {
+  return (
+    <PasswordGate>
+      <App />
+    </PasswordGate>
+  );
+}
+
+function App() {
   // Supabase: expenses are loaded from the DB, not localStorage
   const [expenses, setExpenses] = useState([]);
   const [loading, setLoading] = useState(true);
