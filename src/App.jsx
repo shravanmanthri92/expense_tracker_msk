@@ -16,15 +16,13 @@ const CATEGORIES = [
 const getCat = (id) => CATEGORIES.find((c) => c.id === id) || CATEGORIES[7];
 
 const CURRENCY_OPTIONS = [
-  { code: "USD", label: "USD ($)", locale: "en-US", symbol: "$" },
   { code: "INR", label: "INR (₹)", locale: "en-IN", symbol: "₹" },
-  { code: "EUR", label: "EUR (€)", locale: "de-DE", symbol: "€" },
 ];
 
 const getCurrencyMeta = (code) =>
   CURRENCY_OPTIONS.find((c) => c.code === code) || CURRENCY_OPTIONS[0];
 
-const fmt = (n, currency = "USD") => {
+const fmt = (n, currency = "INR") => {
   const meta = getCurrencyMeta(currency);
   return new Intl.NumberFormat(meta.locale, { style: "currency", currency: meta.code }).format(n);
 };
@@ -39,14 +37,19 @@ const todayISO = () => new Date().toISOString().split("T")[0];
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 // Maps a Supabase DB row → internal app shape (DB uses `notes`, app uses `description`)
-const mapRow = (row) => ({
-  id: row.id,
-  amount: parseFloat(row.amount),
-  description: row.notes,
-  category: row.category,
-  date: row.date,
-  spentBy: row.spent_by || "Shravan",
-});
+const mapRow = (row) => {
+  const rawNotes = row.notes || "";
+  const isRecurring = rawNotes.endsWith("||r");
+  return {
+    id: row.id,
+    amount: parseFloat(row.amount),
+    description: isRecurring ? rawNotes.slice(0, -3) : rawNotes,
+    category: row.category,
+    date: row.date,
+    spentBy: row.spent_by || "Shravan",
+    isRecurring,
+  };
+};
 
 const buildPieGradient = (items) => {
   if (!items.length) return "conic-gradient(rgba(148, 163, 184, 0.18) 0 100%)";
@@ -68,20 +71,96 @@ export default function App() {
   const [dbError, setDbError] = useState(null);
   const [isSaving, setIsSaving] = useState(false);
   const [view, setView] = useState("dashboard");
-  const [form, setForm] = useState({ amount: "", description: "", category: "food", date: todayISO(), spentBy: "Shravan" });
+  const [form, setForm] = useState({ amount: "", description: "", category: "food", date: todayISO(), spentBy: "Shravan", isRecurring: false });
   const [editId, setEditId] = useState(null);
   const [filterCat, setFilterCat] = useState("all");
   const [filterMonth, setFilterMonth] = useState("all");
   const [filterSpentBy, setFilterSpentBy] = useState("all");
   const [toast, setToast] = useState(null);
-  const [currency, setCurrency] = useState(() => localStorage.getItem("expenseCurrency") || "USD");
+  const [currency] = useState("INR");
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [searchQ, setSearchQ] = useState("");
+  const [analyticsMonth, setAnalyticsMonth] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  });
+  const [budget, setBudget] = useState(0);
+  const [budgetEditing, setBudgetEditing] = useState(false);
+  const [budgetDraft, setBudgetDraft] = useState("");
+  const [sortBy, setSortBy] = useState("date-desc");
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportMode, setExportMode] = useState("all");
+  const [exportMonth, setExportMonth] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  });
+  const [exportFrom, setExportFrom] = useState("");
+  const [exportTo, setExportTo] = useState("");
+  const [historyPageSize, setHistoryPageSize] = useState(50);
+  const [catLimits, setCatLimits] = useState({});
+  const [catLimitEditing, setCatLimitEditing] = useState(null);
+  const [catLimitDraft, setCatLimitDraft] = useState("");
+  const [pieMonth, setPieMonth] = useState("all");
+  const [selectedPieCat, setSelectedPieCat] = useState(null);
 
-  // Keep currency preference in localStorage
+  // Reset pagination when filters/sort change
   useEffect(() => {
-    localStorage.setItem("expenseCurrency", currency);
-  }, [currency]);
+    setHistoryPageSize(50);
+  }, [filterCat, filterMonth, filterSpentBy, searchQ, sortBy]);
+
+  // Supabase: upsert a single settings row
+  const upsertSetting = async (key, value) => {
+    await supabase
+      .from("settings")
+      .upsert({ key, value: JSON.stringify(value), updated_at: new Date().toISOString() }, { onConflict: "key" });
+  };
+
+  // Supabase: fetch settings (budget + catLimits) and migrate any localStorage values
+  const fetchSettings = async () => {
+    const { data } = await supabase.from("settings").select("key, value");
+    const map = Object.fromEntries((data || []).map((r) => [r.key, r.value]));
+
+    // --- budget ---
+    const dbBudget = map["budget"] ? parseFloat(JSON.parse(map["budget"])) : null;
+    const lsBudget = localStorage.getItem("expenseBudget");
+    if (dbBudget !== null) {
+      setBudget(dbBudget);
+    } else if (lsBudget) {
+      const val = parseFloat(lsBudget) || 0;
+      setBudget(val);
+      await upsertSetting("budget", val);
+    }
+    localStorage.removeItem("expenseBudget");
+
+    // --- catLimits ---
+    const dbLimits = map["cat_limits"] ? JSON.parse(JSON.parse(map["cat_limits"])) : null;
+    const lsLimits = localStorage.getItem("catLimits");
+    if (dbLimits !== null) {
+      setCatLimits(dbLimits);
+    } else if (lsLimits) {
+      try {
+        const val = JSON.parse(lsLimits);
+        setCatLimits(val);
+        await upsertSetting("cat_limits", val);
+      } catch { /* ignore */ }
+    }
+    localStorage.removeItem("catLimits");
+  };
+
+  // Persist budget to Supabase + local state
+  const saveBudget = async (val) => {
+    setBudget(val);
+    await upsertSetting("budget", val);
+  };
+
+  // Persist catLimits to Supabase + local state
+  const saveCatLimits = async (updater) => {
+    setCatLimits((prev) => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      upsertSetting("cat_limits", next);
+      return next;
+    });
+  };
 
   // Supabase: fetch all expenses, ordered newest first
   const fetchExpenses = async () => {
@@ -101,6 +180,7 @@ export default function App() {
 
   useEffect(() => {
     fetchExpenses();
+    fetchSettings();
   }, []);
 
   const showToast = (msg, type = "success") => {
@@ -109,17 +189,18 @@ export default function App() {
   };
 
   // Supabase: insert new or update existing expense
-  const saveExpense = async () => {
+  const saveExpense = async (addAnother = false) => {
     const amount = parseFloat(form.amount);
     if (!amount || amount <= 0 || !form.description.trim()) {
       showToast("Please fill in amount and description.", "error");
       return;
     }
+    const encodedNotes = form.isRecurring ? form.description + "||r" : form.description;
     setIsSaving(true);
     if (editId) {
       const { error } = await supabase
         .from("expenses")
-        .update({ amount, category: form.category, date: form.date, notes: form.description, spent_by: form.spentBy })
+        .update({ amount, category: form.category, date: form.date, notes: encodedNotes, spent_by: form.spentBy })
         .eq("id", editId);
       if (error) { showToast("Failed to update expense.", "error"); setIsSaving(false); return; }
       setExpenses((prev) => prev.map((e) => (e.id === editId ? { ...e, ...form, amount } : e)));
@@ -128,7 +209,7 @@ export default function App() {
     } else {
       const { data, error } = await supabase
         .from("expenses")
-        .insert({ amount, category: form.category, date: form.date, notes: form.description, spent_by: form.spentBy })
+        .insert({ amount, category: form.category, date: form.date, notes: encodedNotes, spent_by: form.spentBy })
         .select()
         .single();
       if (error) { showToast("Failed to add expense.", "error"); setIsSaving(false); return; }
@@ -136,8 +217,8 @@ export default function App() {
       showToast("Expense added!");
     }
     setIsSaving(false);
-    setForm({ amount: "", description: "", category: "food", date: todayISO(), spentBy: "Shravan" });
-    setView("dashboard");
+    setForm({ amount: "", description: "", category: "food", date: todayISO(), spentBy: "Shravan", isRecurring: false });
+    if (!addAnother) setView("dashboard");
   };
 
   // Supabase: delete expense by id
@@ -152,20 +233,23 @@ export default function App() {
   };
 
   const startEdit = (e) => {
-    setForm({ amount: String(e.amount), description: e.description, category: e.category, date: e.date, spentBy: e.spentBy || "Shravan" });
+    setForm({ amount: String(e.amount), description: e.description, category: e.category, date: e.date, spentBy: e.spentBy || "Shravan", isRecurring: e.isRecurring || false });
     setEditId(e.id);
     setView("add");
   };
 
   const cancelEdit = () => {
     setEditId(null);
-    setForm({ amount: "", description: "", category: "food", date: todayISO(), spentBy: "Shravan" });
+    setForm({ amount: "", description: "", category: "food", date: todayISO(), spentBy: "Shravan", isRecurring: false });
     setView("history");
   };
 
   const now = new Date();
   const currentMonth = now.getMonth();
   const currentYear = now.getFullYear();
+  const prevMonthDate = new Date(currentYear, currentMonth - 1, 1);
+  const prevMonth = prevMonthDate.getMonth();
+  const prevYear = prevMonthDate.getFullYear();
 
   const thisMonthExpenses = useMemo(
     () =>
@@ -200,6 +284,22 @@ export default function App() {
       .sort((a, b) => b.total - a.total);
   }, [expenses]);
 
+  const filteredPieCatTotals = useMemo(() => {
+    const src = pieMonth === "all" ? expenses : expenses.filter((e) => e.date.startsWith(pieMonth));
+    const map = {};
+    src.forEach((e) => { map[e.category] = (map[e.category] || 0) + e.amount; });
+    return CATEGORIES.map((c) => ({ ...c, total: map[c.id] || 0 }))
+      .filter((c) => c.total > 0)
+      .sort((a, b) => b.total - a.total);
+  }, [expenses, pieMonth]);
+
+  const pieCatExpenses = useMemo(() => {
+    if (!selectedPieCat) return [];
+    return expenses
+      .filter((e) => e.category === selectedPieCat && (pieMonth === "all" || e.date.startsWith(pieMonth)))
+      .sort((a, b) => (b.date > a.date ? 1 : -1));
+  }, [expenses, selectedPieCat, pieMonth]);
+
   const last6Months = useMemo(() => {
     return Array.from({ length: 6 }).map((_, i) => {
       const d = new Date(currentYear, currentMonth - (5 - i), 1);
@@ -232,19 +332,47 @@ export default function App() {
     });
   }, [expenses, filterCat, filterMonth, filterSpentBy, searchQ]);
 
-  const exportCSV = () => {
-    const header = "Date,Description,Category,Amount\n";
-    const rows = expenses
-      .map((e) => `${e.date},"${e.description.replace(/"/g, '""')}","${getCat(e.category).label}",${e.amount}`)
+  const sortedFilteredExpenses = useMemo(() => {
+    const arr = [...filteredExpenses];
+    if (sortBy === "date-desc") arr.sort((a, b) => b.date.localeCompare(a.date));
+    else if (sortBy === "date-asc") arr.sort((a, b) => a.date.localeCompare(b.date));
+    else if (sortBy === "amount-desc") arr.sort((a, b) => b.amount - a.amount);
+    else if (sortBy === "amount-asc") arr.sort((a, b) => a.amount - b.amount);
+    return arr;
+  }, [filteredExpenses, sortBy]);
+
+  const doExport = (rows, filename) => {
+    const header = "Date,Description,Category,Amount,Spent By\n";
+    const body = rows
+      .map((e) => `${e.date},"${e.description.replace(/"/g, '""')}","${getCat(e.category).label}",${e.amount},"${e.spentBy || "Shravan"}"`)
       .join("\n");
-    const blob = new Blob([header + rows], { type: "text/csv" });
+    const blob = new Blob([header + body], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "expenses.csv";
+    a.download = filename;
     a.click();
     URL.revokeObjectURL(url);
     showToast("CSV exported!");
+  };
+
+  const handleExport = () => {
+    let filtered = expenses;
+    let filename = "expenses-all.csv";
+    if (exportMode === "month") {
+      filtered = expenses.filter((e) => e.date.startsWith(exportMonth));
+      filename = `expenses-${exportMonth}.csv`;
+    } else if (exportMode === "range") {
+      filtered = expenses.filter((e) => {
+        if (exportFrom && e.date < exportFrom) return false;
+        if (exportTo && e.date > exportTo) return false;
+        return true;
+      });
+      const label = exportFrom || exportTo ? `${exportFrom || "start"}_to_${exportTo || "end"}` : "custom";
+      filename = `expenses-${label}.csv`;
+    }
+    doExport(filtered, filename);
+    setExportOpen(false);
   };
 
   const recentExpenses = expenses.slice(0, 5);
@@ -258,8 +386,89 @@ export default function App() {
     () => last6Months.reduce((sum, item) => sum + item.total, 0) / last6Months.length,
     [last6Months]
   );
-  const pieGradient = useMemo(() => buildPieGradient(allTimeCategoryTotals), [allTimeCategoryTotals]);
+  const pieGradient = useMemo(() => buildPieGradient(filteredPieCatTotals), [filteredPieCatTotals]);
   const filtersActive = filterCat !== "all" || filterMonth !== "all" || filterSpentBy !== "all" || searchQ.trim() !== "";
+
+  const pagedExpenses = useMemo(
+    () => sortedFilteredExpenses.slice(0, historyPageSize),
+    [sortedFilteredExpenses, historyPageSize]
+  );
+
+  const catLimitAlerts = useMemo(() => {
+    return catTotals
+      .filter((c) => catLimits[c.id] && c.total > catLimits[c.id])
+      .map((c) => ({ ...c, limit: catLimits[c.id], over: c.total - catLimits[c.id] }));
+  }, [catTotals, catLimits]);
+
+  const personMonthTotals = useMemo(() => {
+    const monthExpenses = expenses.filter((e) => e.date.startsWith(analyticsMonth));
+    const totals = {};
+    monthExpenses.forEach((e) => {
+      const person = e.spentBy || "Shravan";
+      totals[person] = (totals[person] || 0) + e.amount;
+    });
+    const people = [
+      { name: "Shravan", color: "#3b82f6", emoji: "✋" },
+      { name: "Nikhitha", color: "#ec4899", emoji: "👋" },
+    ];
+    const grandTotal = Object.values(totals).reduce((s, v) => s + v, 0);
+    return {
+      rows: people.map((p) => ({ ...p, total: totals[p.name] || 0 })),
+      grandTotal,
+    };
+  }, [expenses, analyticsMonth]);
+
+  const thisMonthByPerson = useMemo(() => {
+    const totals = {};
+    thisMonthExpenses.forEach((e) => {
+      const p = e.spentBy || "Shravan";
+      totals[p] = (totals[p] || 0) + e.amount;
+    });
+    return [
+      { name: "Shravan", color: "#3b82f6", emoji: "✋", total: totals["Shravan"] || 0 },
+      { name: "Nikhitha", color: "#ec4899", emoji: "👋", total: totals["Nikhitha"] || 0 },
+    ];
+  }, [thisMonthExpenses]);
+
+  const prevMonthExpenses = useMemo(
+    () => expenses.filter((e) => {
+      const d = new Date(e.date);
+      return d.getMonth() === prevMonth && d.getFullYear() === prevYear;
+    }),
+    [expenses, prevMonth, prevYear]
+  );
+
+  const prevMonthTotal = useMemo(() => prevMonthExpenses.reduce((s, e) => s + e.amount, 0), [prevMonthExpenses]);
+
+  const monthDelta = useMemo(() => {
+    if (!prevMonthTotal) return null;
+    return ((totalThisMonth - prevMonthTotal) / prevMonthTotal) * 100;
+  }, [totalThisMonth, prevMonthTotal]);
+
+  const prevMonthByPerson = useMemo(() => {
+    const totals = {};
+    prevMonthExpenses.forEach((e) => {
+      const p = e.spentBy || "Shravan";
+      totals[p] = (totals[p] || 0) + e.amount;
+    });
+    return [
+      { name: "Shravan", color: "#3b82f6", emoji: "✋", total: totals["Shravan"] || 0 },
+      { name: "Nikhitha", color: "#ec4899", emoji: "👋", total: totals["Nikhitha"] || 0 },
+    ];
+  }, [prevMonthExpenses]);
+
+  const prevTopCategory = useMemo(() => {
+    const map = {};
+    prevMonthExpenses.forEach((e) => {
+      map[e.category] = (map[e.category] || 0) + e.amount;
+    });
+    return CATEGORIES.map((c) => ({ ...c, total: map[c.id] || 0 }))
+      .filter((c) => c.total > 0)
+      .sort((a, b) => b.total - a.total)[0] || null;
+  }, [prevMonthExpenses]);
+
+  const budgetPct = budget > 0 ? Math.min((totalThisMonth / budget) * 100, 100) : 0;
+  const budgetColor = budgetPct >= 90 ? "#ef4444" : budgetPct >= 70 ? "#f59e0b" : "#22c55e";
 
   return (
     <div className="app">
@@ -277,6 +486,86 @@ export default function App() {
               <button className="btn btn-danger" onClick={() => deleteExpense(deleteConfirm)} disabled={isSaving}>
                 {isSaving ? "Deleting…" : "Delete"}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {exportOpen && (
+        <div className="modal-overlay" onClick={() => setExportOpen(false)}>
+          <div className="modal export-modal" onClick={(e) => e.stopPropagation()}>
+            <p className="modal-title">Export CSV</p>
+            <p className="modal-sub">Choose what to include in the export.</p>
+
+            <div className="export-options">
+              {[["all", "All time"], ["month", "By month"], ["range", "Date range"]].map(([mode, label]) => (
+                <label key={mode} className={`export-option${exportMode === mode ? " selected" : ""}`}>
+                  <input
+                    type="radio"
+                    name="exportMode"
+                    value={mode}
+                    checked={exportMode === mode}
+                    onChange={() => setExportMode(mode)}
+                  />
+                  {label}
+                </label>
+              ))}
+            </div>
+
+            {exportMode === "month" && (
+              <div className="export-field">
+                <label className="form-label">Select month</label>
+                <select
+                  className="form-input"
+                  value={exportMonth}
+                  onChange={(e) => setExportMonth(e.target.value)}
+                >
+                  {availableMonths.map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {exportMode === "range" && (
+              <div className="export-range">
+                <div className="export-field">
+                  <label className="form-label">From</label>
+                  <input
+                    className="form-input"
+                    type="date"
+                    value={exportFrom}
+                    onChange={(e) => setExportFrom(e.target.value)}
+                  />
+                </div>
+                <div className="export-field">
+                  <label className="form-label">To</label>
+                  <input
+                    className="form-input"
+                    type="date"
+                    value={exportTo}
+                    onChange={(e) => setExportTo(e.target.value)}
+                  />
+                </div>
+              </div>
+            )}
+
+            <div className="export-preview">
+              {(() => {
+                let count = expenses.length;
+                if (exportMode === "month") count = expenses.filter((e) => e.date.startsWith(exportMonth)).length;
+                else if (exportMode === "range") count = expenses.filter((e) => {
+                  if (exportFrom && e.date < exportFrom) return false;
+                  if (exportTo && e.date > exportTo) return false;
+                  return true;
+                }).length;
+                return <span>{count} row{count === 1 ? "" : "s"} will be exported</span>;
+              })()}
+            </div>
+
+            <div className="modal-actions">
+              <button className="btn btn-ghost" onClick={() => setExportOpen(false)}>Cancel</button>
+              <button className="btn btn-primary" onClick={handleExport}>Download CSV</button>
             </div>
           </div>
         </div>
@@ -315,21 +604,8 @@ export default function App() {
             ))}
           </nav>
           <div className="header-actions">
-            <select
-              className="form-input currency-select"
-              value={currency}
-              onChange={(e) => setCurrency(e.target.value)}
-              aria-label="Select currency"
-            >
-              {CURRENCY_OPTIONS.map((option) => (
-                <option key={option.code} value={option.code}>{option.label}</option>
-              ))}
-            </select>
-            <button className="export-btn" onClick={exportCSV}>
-              Export CSV
-            </button>
-            <button className="btn btn-primary btn-sm" onClick={() => setView("add")}>
-              + Add
+            <button className="export-btn" onClick={() => setExportOpen(true)}>
+              Export CSV ↓
             </button>
           </div>
         </div>
@@ -382,7 +658,14 @@ export default function App() {
               <div className="stat-card accent soft-glow">
                 <span className="stat-label">This Month</span>
                 <span className="stat-value">{fmt(totalThisMonth, currency)}</span>
-                <span className="stat-meta">{thisMonthExpenses.length} transactions</span>
+                <span className="stat-meta">
+                  {thisMonthExpenses.length} transactions
+                  {monthDelta !== null && (
+                    <span className={`delta-badge ${monthDelta >= 0 ? "delta-up" : "delta-down"}`}>
+                      {monthDelta >= 0 ? "▲" : "▼"} {Math.abs(monthDelta).toFixed(1)}%
+                    </span>
+                  )}
+                </span>
               </div>
               <div className="stat-card">
                 <span className="stat-label">All Time</span>
@@ -399,6 +682,61 @@ export default function App() {
                 <span className="stat-value">{topCategory ? `${getCat(topCategory.id).icon} ${getCat(topCategory.id).label.split("/")[0]}` : "—"}</span>
                 <span className="stat-meta">{topCategory ? fmt(topCategory.total, currency) : "no data yet"}</span>
               </div>
+              {thisMonthByPerson.map((p) => (
+                <div key={p.name} className="stat-card">
+                  <span className="stat-label">{p.emoji} {p.name}</span>
+                  <span className="stat-value" style={{ color: p.color }}>{fmt(p.total, currency)}</span>
+                  <span className="stat-meta">this month</span>
+                </div>
+              ))}
+            </div>
+
+            <div className="card budget-card elevated-card">
+              <div className="budget-header">
+                <span className="budget-title">Monthly Budget</span>
+                {!budgetEditing && budget === 0 && (
+                  <button className="link" onClick={() => { setBudgetDraft(""); setBudgetEditing(true); }}>Set budget →</button>
+                )}
+                {!budgetEditing && budget > 0 && (
+                  <button className="link" onClick={() => { setBudgetDraft(String(budget)); setBudgetEditing(true); }}>Edit</button>
+                )}
+              </div>
+              {budgetEditing ? (
+                <div className="budget-edit-row">
+                  <span className="budget-edit-prefix">{currencyMeta.symbol}</span>
+                  <input
+                    className="form-input budget-input"
+                    type="number"
+                    min="0"
+                    step="1"
+                    placeholder="Enter monthly budget"
+                    value={budgetDraft}
+                    autoFocus
+                    onChange={(e) => setBudgetDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") { saveBudget(parseFloat(budgetDraft) || 0); setBudgetEditing(false); }
+                      if (e.key === "Escape") setBudgetEditing(false);
+                    }}
+                  />
+                  <button className="btn btn-primary btn-sm" onClick={() => { saveBudget(parseFloat(budgetDraft) || 0); setBudgetEditing(false); }}>Save</button>
+                  <button className="btn btn-ghost btn-sm" onClick={() => setBudgetEditing(false)}>Cancel</button>
+                </div>
+              ) : budget > 0 ? (
+                <div className="budget-progress-wrap">
+                  <div className="budget-amounts">
+                    <span>{fmt(totalThisMonth, currency)} <span className="budget-of">of</span> {fmt(budget, currency)}</span>
+                    <span className="budget-remaining-label" style={{ color: budgetColor }}>
+                      {totalThisMonth > budget ? `${fmt(totalThisMonth - budget, currency)} over budget` : `${fmt(budget - totalThisMonth, currency)} remaining`}
+                    </span>
+                  </div>
+                  <div className="budget-bar-bg">
+                    <div className="budget-bar-fill" style={{ width: `${budgetPct}%`, background: budgetColor }} />
+                  </div>
+                  <div className="budget-pct-label" style={{ color: budgetColor }}>{Math.round(budgetPct)}% used</div>
+                </div>
+              ) : (
+                <p className="budget-empty-text">No budget set. Set one to track your monthly spending progress.</p>
+              )}
             </div>
 
             <div className="dashboard-grid">
@@ -422,7 +760,7 @@ export default function App() {
                         <li key={e.id} className="tx-item tx-item-modern">
                           <span className="tx-icon" style={{ background: `${cat.color}22`, color: cat.color }}>{cat.icon}</span>
                           <div className="tx-info">
-                            <span className="tx-desc">{e.description}</span>
+                          <span className="tx-desc">{e.description}{e.isRecurring && <span className="recurring-badge" title="Recurring">🔁</span>}</span>
                             <span className="tx-date">{fmtDate(e.date)} · {cat.label}</span>
                           </div>
                           <span className={`spent-pill spent-${(e.spentBy || "shravan").toLowerCase()}`}>{e.spentBy || "Shravan"}</span>
@@ -441,22 +779,40 @@ export default function App() {
                     <p className="card-subtitle">Where most of your budget is going this month.</p>
                   </div>
                 </div>
+                {catLimitAlerts.length > 0 && (
+                  <div className="cat-limit-alert-banner">
+                    ⚠️ Over limit: {catLimitAlerts.map((a) => `${a.icon} ${a.label.split("/")[0]}`).join(", ")}
+                  </div>
+                )}
                 {catTotals.length === 0 ? (
                   <div className="empty">No data for this month.</div>
                 ) : (
                   <ul className="cat-list cat-list-modern">
-                    {catTotals.map((c) => (
-                      <li key={c.id} className="cat-item modern-cat-item">
-                        <div className="cat-row">
-                          <span className="cat-icon modern-cat-icon" style={{ background: `${c.color}20`, color: c.color }}>{c.icon}</span>
-                          <span className="cat-name">{c.label}</span>
-                          <span className="cat-amt">{fmt(c.total, currency)}</span>
-                        </div>
-                        <div className="cat-bar-bg">
-                          <div className="cat-bar-fill" style={{ width: `${(c.total / totalThisMonth) * 100}%`, background: c.color }} />
-                        </div>
-                      </li>
-                    ))}
+                    {catTotals.map((c) => {
+                      const limit = catLimits[c.id];
+                      const isOver = limit && c.total > limit;
+                      return (
+                        <li key={c.id} className={`cat-item modern-cat-item${isOver ? " cat-over-limit" : ""}`}>
+                          <div className="cat-row">
+                            <span className="cat-icon modern-cat-icon" style={{ background: `${c.color}20`, color: c.color }}>{c.icon}</span>
+                            <span className="cat-name">{c.label}</span>
+                            {isOver && <span className="cat-over-badge">⚠️ Over</span>}
+                            <span className="cat-amt">{fmt(c.total, currency)}</span>
+                          </div>
+                          <div className="cat-bar-bg">
+                            <div className="cat-bar-fill" style={{ width: `${(c.total / totalThisMonth) * 100}%`, background: isOver ? "#ef4444" : c.color }} />
+                          </div>
+                          {limit && (
+                            <div className="cat-limit-row">
+                              <span className="cat-limit-label">Limit: {fmt(limit, currency)}</span>
+                              <span className={`cat-limit-remaining ${isOver ? "over" : ""}`}>
+                                {isOver ? `${fmt(c.total - limit, currency)} over` : `${fmt(limit - c.total, currency)} left`}
+                              </span>
+                            </div>
+                          )}
+                        </li>
+                      );
+                    })}
                   </ul>
                 )}
               </div>
@@ -539,9 +895,27 @@ export default function App() {
                 </div>
               </div>
 
-              <button className="btn btn-primary btn-full" onClick={saveExpense} disabled={isSaving}>
-                {isSaving ? "Saving…" : editId ? "Save Changes" : "Add Expense"}
-              </button>
+              <div className="form-group">
+                <label className="form-label">Recurring expense</label>
+                <button
+                  type="button"
+                  className={`recurring-toggle${form.isRecurring ? " active" : ""}`}
+                  onClick={() => setForm((f) => ({ ...f, isRecurring: !f.isRecurring }))}
+                >
+                  🔁 {form.isRecurring ? "Yes — this repeats every month" : "No — one-time expense"}
+                </button>
+              </div>
+
+              <div className="form-actions-row">
+                <button className="btn btn-primary btn-full" onClick={() => saveExpense(false)} disabled={isSaving}>
+                  {isSaving ? "Saving…" : editId ? "Save Changes" : "Add Expense"}
+                </button>
+                {!editId && (
+                  <button className="btn btn-ghost btn-full" onClick={() => saveExpense(true)} disabled={isSaving}>
+                    Save &amp; Add Another
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -553,7 +927,7 @@ export default function App() {
                 <h1 className="page-title">Transaction History</h1>
                 <p className="page-sub">Search, filter, edit, and manage all entries.</p>
               </div>
-              <span className="badge">{filteredExpenses.length} entries</span>
+              <span className="badge">{sortedFilteredExpenses.length} entries</span>
             </div>
 
             <div className="filters card filter-card">
@@ -571,6 +945,12 @@ export default function App() {
                 <option value="Shravan">✋ Shravan</option>
                 <option value="Nikhitha">👋 Nikhitha</option>
               </select>
+              <select className="form-input" value={sortBy} onChange={(e) => setSortBy(e.target.value)} aria-label="Sort by">
+                <option value="date-desc">Date: Newest first</option>
+                <option value="date-asc">Date: Oldest first</option>
+                <option value="amount-desc">Amount: High to low</option>
+                <option value="amount-asc">Amount: Low to high</option>
+              </select>
               {filtersActive && (
                 <button className="btn btn-ghost btn-reset" onClick={() => { setFilterCat("all"); setFilterMonth("all"); setFilterSpentBy("all"); setSearchQ(""); }}>
                   Clear filters
@@ -578,18 +958,18 @@ export default function App() {
               )}
             </div>
 
-            {filteredExpenses.length === 0 ? (
+            {sortedFilteredExpenses.length === 0 ? (
               <div className="card empty">No transactions found.</div>
             ) : (
               <div className="card elevated-card">
                 <ul className="tx-list tx-list-full">
-                  {filteredExpenses.map((e) => {
+                  {pagedExpenses.map((e) => {
                     const cat = getCat(e.category);
                     return (
                       <li key={e.id} className="tx-item tx-item-modern tx-item-history">
                         <span className="tx-icon" style={{ background: `${cat.color}22`, color: cat.color }}>{cat.icon}</span>
                         <div className="tx-info">
-                          <span className="tx-desc">{e.description}</span>
+                          <span className="tx-desc">{e.description}{e.isRecurring && <span className="recurring-badge" title="Recurring">🔁</span>}</span>
                           <span className="tx-date">{fmtDate(e.date)} · {cat.label}</span>
                         </div>
                         <span className={`spent-pill spent-${(e.spentBy || "shravan").toLowerCase()}`}>{e.spentBy || "Shravan"}</span>
@@ -602,6 +982,14 @@ export default function App() {
                     );
                   })}
                 </ul>
+                {sortedFilteredExpenses.length > historyPageSize && (
+                  <div className="load-more-row">
+                    <span className="load-more-count">Showing {historyPageSize} of {sortedFilteredExpenses.length}</span>
+                    <button className="btn btn-ghost load-more-btn" onClick={() => setHistoryPageSize((n) => n + 50)}>
+                      Load 50 more
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -634,6 +1022,44 @@ export default function App() {
               </div>
             </div>
 
+            <div className="card elevated-card month-compare-card">
+              <div className="card-headline-row">
+                <div>
+                  <h2 className="card-title">This Month vs Last Month</h2>
+                  <p className="card-subtitle">Side-by-side comparison of key spending metrics.</p>
+                </div>
+                {monthDelta !== null && (
+                  <span className={`delta-badge delta-badge-lg ${monthDelta >= 0 ? "delta-up" : "delta-down"}`}>
+                    {monthDelta >= 0 ? "▲" : "▼"} {Math.abs(monthDelta).toFixed(1)}% vs last month
+                  </span>
+                )}
+              </div>
+              <div className="month-compare-grid">
+                {[
+                  { label: `${MONTHS[currentMonth]} ${currentYear}`, total: totalThisMonth, count: thisMonthExpenses.length, topCat: topCategory, byPerson: thisMonthByPerson, isCurrent: true },
+                  { label: `${MONTHS[prevMonth]} ${prevYear}`, total: prevMonthTotal, count: prevMonthExpenses.length, topCat: prevTopCategory, byPerson: prevMonthByPerson, isCurrent: false },
+                ].map((col) => (
+                  <div key={col.label} className={`month-compare-col${col.isCurrent ? " month-compare-current" : ""}`}>
+                    <div className="month-compare-col-label">{col.label}</div>
+                    <div className="month-compare-total">{fmt(col.total, currency)}</div>
+                    <div className="month-compare-meta">{col.count} transaction{col.count === 1 ? "" : "s"}</div>
+                    <div className="month-compare-rows">
+                      <div className="month-compare-row">
+                        <span className="month-compare-key">Top category</span>
+                        <span className="month-compare-val">{col.topCat ? `${col.topCat.icon} ${col.topCat.label.split("/")[0]}` : "—"}</span>
+                      </div>
+                      {col.byPerson.map((p) => (
+                        <div key={p.name} className="month-compare-row">
+                          <span className="month-compare-key">{p.emoji} {p.name}</span>
+                          <span className="month-compare-val" style={{ color: p.color }}>{fmt(p.total, currency)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
             <div className="card elevated-card">
               <div className="card-headline-row">
                 <div>
@@ -658,52 +1084,84 @@ export default function App() {
               <div className="card elevated-card">
                 <div className="card-headline-row">
                   <div>
-                    <h2 className="card-title">All-Time by Category</h2>
-                    <p className="card-subtitle">Relative share of each category in your overall spending.</p>
+                    <h2 className="card-title">Spending by Category</h2>
                   </div>
+                  <select
+                    className="form-input analytics-month-select"
+                    value={pieMonth}
+                    onChange={(e) => { setPieMonth(e.target.value); setSelectedPieCat(null); }}
+                  >
+                    <option value="all">All Time</option>
+                    {availableMonths.map((m) => (
+                      <option key={m} value={m}>{m}</option>
+                    ))}
+                  </select>
                 </div>
-                {allTimeCategoryTotals.length === 0 ? (
-                  <div className="empty">No data yet.</div>
-                ) : (
-                  <>
-                    <div className="pie-layout">
-                      <div className="pie-wrap">
-                        <div className="pie-chart" style={{ background: pieGradient }}>
-                          <div className="pie-hole">
-                            <span>Total</span>
-                            <strong>{fmt(totalAll, currency)}</strong>
+                {filteredPieCatTotals.length === 0 ? (
+                  <div className="empty">No data{pieMonth !== "all" ? ` for ${pieMonth}` : ""} yet.</div>
+                ) : (() => {
+                  const pieTotal = filteredPieCatTotals.reduce((s, c) => s + c.total, 0);
+                  return (
+                    <>
+                      <div className="pie-layout">
+                        <div className="pie-wrap">
+                          <div className="pie-chart" style={{ background: pieGradient }}>
+                            <div className="pie-hole">
+                              <span>{pieMonth === "all" ? "Total" : pieMonth}</span>
+                              <strong>{fmt(pieTotal, currency)}</strong>
+                            </div>
                           </div>
                         </div>
+                        <ul className="legend-list">
+                          {filteredPieCatTotals.map((c) => {
+                            const pct = Math.round((c.total / pieTotal) * 100);
+                            const isActive = selectedPieCat === c.id;
+                            return (
+                              <li
+                                key={c.id}
+                                className={`legend-item legend-item-btn${isActive ? " legend-item-active" : ""}`}
+                                onClick={() => setSelectedPieCat(isActive ? null : c.id)}
+                                style={{ cursor: "pointer" }}
+                              >
+                                <span className="legend-dot" style={{ background: c.color }} />
+                                <span className="legend-name">{c.icon} {c.label}</span>
+                                <span className="legend-meta">{pct}% · {fmt(c.total, currency)}</span>
+                                {isActive && <span className="legend-chevron">▾</span>}
+                              </li>
+                            );
+                          })}
+                        </ul>
                       </div>
-                      <ul className="legend-list">
-                        {allTimeCategoryTotals.map((c) => {
-                          const pct = Math.round((c.total / totalAll) * 100);
-                          return (
-                            <li key={c.id} className="legend-item">
-                              <span className="legend-dot" style={{ background: c.color }} />
-                              <span className="legend-name">{c.icon} {c.label}</span>
-                              <span className="legend-meta">{pct}% · {fmt(c.total, currency)}</span>
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    </div>
-                    <ul className="cat-list cat-list-modern compact-list">
-                      {allTimeCategoryTotals.map((c) => (
-                        <li key={c.id} className="cat-item modern-cat-item">
-                          <div className="cat-row">
-                            <span className="cat-icon modern-cat-icon" style={{ background: `${c.color}20`, color: c.color }}>{c.icon}</span>
-                            <span className="cat-name">{c.label}</span>
-                            <span className="cat-amt">{fmt(c.total, currency)} <span className="cat-pct">({Math.round((c.total / totalAll) * 100)}%)</span></span>
+
+                      {selectedPieCat && (() => {
+                        const catMeta = CATEGORIES.find((x) => x.id === selectedPieCat);
+                        return (
+                          <div className="pie-drilldown">
+                            <div className="pie-drilldown-header">
+                              <span style={{ color: catMeta?.color }}>{catMeta?.icon} {catMeta?.label}</span>
+                              <span className="pie-drilldown-count">{pieCatExpenses.length} transaction{pieCatExpenses.length !== 1 ? "s" : ""}</span>
+                              <button className="link pie-drilldown-close" onClick={() => setSelectedPieCat(null)}>✕ Close</button>
+                            </div>
+                            {pieCatExpenses.length === 0 ? (
+                              <p className="empty" style={{ fontSize: "0.85rem" }}>No transactions found.</p>
+                            ) : (
+                              <ul className="pie-drilldown-list">
+                                {pieCatExpenses.map((e) => (
+                                  <li key={e.id} className="pie-drilldown-row">
+                                    <span className="pie-dd-date">{e.date}</span>
+                                    <span className="pie-dd-desc">{e.description}{e.isRecurring ? " 🔁" : ""}</span>
+                                    <span className="pie-dd-person">{e.spentBy}</span>
+                                    <span className="pie-dd-amt">{fmt(e.amount, currency)}</span>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
                           </div>
-                          <div className="cat-bar-bg">
-                            <div className="cat-bar-fill" style={{ width: `${(c.total / totalAll) * 100}%`, background: c.color }} />
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
-                  </>
-                )}
+                        );
+                      })()}
+                    </>
+                  );
+                })()}
               </div>
 
               <div className="card elevated-card">
@@ -728,9 +1186,77 @@ export default function App() {
                 )}
               </div>
             </div>
+
+            <div className="card elevated-card person-month-card">
+              <div className="person-month-header">
+                <div>
+                  <h2 className="card-title">Who Spent How Much</h2>
+                  <p className="card-subtitle">Per-person spending breakdown for the selected month.</p>
+                </div>
+                <select
+                  className="form-input analytics-month-select"
+                  value={analyticsMonth}
+                  onChange={(e) => setAnalyticsMonth(e.target.value)}
+                  aria-label="Select month"
+                >
+                  {availableMonths.map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+              </div>
+
+              {personMonthTotals.grandTotal === 0 ? (
+                <div className="empty">No expenses recorded for this month.</div>
+              ) : (
+                <div className="person-month-body">
+                  <div className="person-month-total-row">
+                    <span className="person-month-total-label">Combined total</span>
+                    <span className="person-month-total-value">{fmt(personMonthTotals.grandTotal, currency)}</span>
+                  </div>
+                  <ul className="person-month-list">
+                    {personMonthTotals.rows.map((p) => {
+                      const pct = personMonthTotals.grandTotal > 0 ? (p.total / personMonthTotals.grandTotal) * 100 : 0;
+                      return (
+                        <li key={p.name} className="person-month-item">
+                          <div className="person-month-row">
+                            <span className={`person-month-pill spent-${p.name.toLowerCase()}`}>{p.emoji} {p.name}</span>
+                            <span className="person-month-amt">{fmt(p.total, currency)}</span>
+                            <span className="person-month-pct">{Math.round(pct)}%</span>
+                          </div>
+                          <div className="cat-bar-bg">
+                            <div className="cat-bar-fill" style={{ width: `${pct}%`, background: p.color }} />
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              )}
+            </div>
           </div>
         )}
       </main>
+
+      <nav className="bottom-nav" aria-label="Main navigation">
+        {[
+          ["dashboard", "🏠", "Home"],
+          ["add", "➕", "Add"],
+          ["history", "📋", "History"],
+          ["analytics", "📊", "Stats"],
+        ].map(([v, icon, label]) => (
+          <button
+            key={v}
+            className={`bottom-nav-btn${view === v ? " active" : ""}`}
+            onClick={() => {
+              if (v !== "add" && editId) cancelEdit();
+              else setView(v);
+            }}
+          >
+            <span className="bottom-nav-icon">{icon}</span>
+            <span className="bottom-nav-label">{label}</span>
+          </button>
+        ))}
+      </nav>
     </div>
   );
 }

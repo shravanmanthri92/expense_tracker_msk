@@ -1,0 +1,18 @@
+{
+  "name": "Nikhitha & Shravan — Household Expenses",
+  "short_name": "N & S Expenses",
+  "description": "Shared household expense tracker for Nikhitha & Shravan.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#fdf8f2",
+  "theme_color": "#f97316",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect width='192' height='192' rx='38' fill='%23f97316'/><text x='18' y='158' font-family='sans-serif' font-weight='900' font-size='130' fill='white'>N</text><text x='106' y='124' font-family='sans-serif' font-weight='900' font-size='100' fill='rgba(255,255,255,0.88)'>S</text></svg>",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
