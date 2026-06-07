@@ -979,7 +979,10 @@ function App() {
                 <h1 className="page-title">Transaction History</h1>
                 <p className="page-sub">Search, filter, edit, and manage all entries.</p>
               </div>
-              <span className="badge">{sortedFilteredExpenses.length} entries</span>
+              <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                <span className="badge">{sortedFilteredExpenses.length} entries</span>
+                <span className="badge history-total-badge">Total: {fmt(sortedFilteredExpenses.reduce((sum, e) => sum + e.amount, 0), currency)}</span>
+              </div>
             </div>
 
             <div className="filters card filter-card">

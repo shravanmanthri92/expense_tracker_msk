@@ -337,6 +337,10 @@ select.form-input option { color: #1c1108; }
   background: rgba(148, 163, 184, 0.08); border: 1px solid var(--border);
   border-radius: 999px; padding: 5px 12px; font-size: 13px; color: var(--text2);
 }
+.history-total-badge {
+  background: rgba(249, 115, 22, 0.10); border-color: rgba(249, 115, 22, 0.28);
+  color: #c2410c; font-weight: 700; font-family: 'JetBrains Mono', monospace;
+}
 
 .modal-overlay {
   position: fixed; inset: 0; background: rgba(120, 70, 20, 0.38);
