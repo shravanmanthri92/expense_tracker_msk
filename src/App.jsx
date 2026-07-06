@@ -4,6 +4,8 @@ import { useAuth } from "./contexts/AuthContext";
 import Login from "./components/Login";
 import Signup from "./components/Signup";
 import ForgotPassword from "./components/ForgotPassword";
+import CreateHousehold from "./components/CreateHousehold";
+import { fetchExpenses as fetchExpensesService, insertExpense, updateExpense as updateExpenseService, deleteExpense as deleteExpenseService } from "./services/expenseService";
 
 const CATEGORIES = [
   { id: "food", label: "Food & Dining", icon: "🍽️", color: "#ff8a65" },
@@ -69,11 +71,11 @@ const buildPieGradient = (items) => {
 };
 
 export default function SpendlyApp() {
-  const { session, loading } = useAuth();
+  const { session, loading, profileLoading, profile } = useAuth();
   const [authView, setAuthView] = useState("login"); // "login" | "signup" | "forgot"
 
-  // While Supabase restores the session, show nothing (avoids flash)
-  if (loading) {
+  // Wait for session restore AND profile/household load before rendering
+  if (loading || (session && profileLoading)) {
     return (
       <div className="auth-overlay">
         <div className="db-loading" style={{ paddingTop: 0 }}>Loading…</div>
@@ -96,17 +98,22 @@ export default function SpendlyApp() {
     );
   }
 
-  // Session active — also handle password-reset redirect
+  // Session active — handle password-reset redirect
   const isResetRedirect = new URLSearchParams(window.location.search).get("reset") === "1";
   if (isResetRedirect) {
     return <ForgotPassword onBack={() => window.history.replaceState({}, document.title, window.location.pathname)} />;
+  }
+
+  // Logged in but no household yet — prompt to create one
+  if (profile && !profile.household_id) {
+    return <CreateHousehold />;
   }
 
   return <App />;
 }
 
 function App() {
-  const { user, profile, signOut } = useAuth();
+  const { user, profile, household, householdId, signOut } = useAuth();
   const [loggingOut, setLoggingOut] = useState(false);
 
   const handleSignOut = async () => {
@@ -212,14 +219,11 @@ function App() {
     });
   };
 
-  // Supabase: fetch all expenses, ordered newest first
+  // Supabase: fetch all expenses for this household, ordered newest first
   const fetchExpenses = async () => {
     setLoading(true);
     setDbError(null);
-    const { data, error } = await supabase
-      .from("expenses")
-      .select("*")
-      .order("created_at", { ascending: false });
+    const { data, error } = await fetchExpensesService(householdId);
     if (error) {
       setDbError(error.message);
     } else {
@@ -229,9 +233,11 @@ function App() {
   };
 
   useEffect(() => {
-    fetchExpenses();
-    fetchSettings();
-  }, []);
+    if (householdId) {
+      fetchExpenses();
+      fetchSettings();
+    }
+  }, [householdId]);
 
   const showToast = (msg, type = "success") => {
     setToast({ msg, type });
@@ -248,20 +254,19 @@ function App() {
     const encodedNotes = form.isRecurring ? form.description + "||r" : form.description;
     setIsSaving(true);
     if (editId) {
-      const { error } = await supabase
-        .from("expenses")
-        .update({ amount, category: form.category, date: form.date, notes: encodedNotes, spent_by: form.spentBy })
-        .eq("id", editId);
+      const { error } = await updateExpenseService({
+        id: editId, amount, category: form.category, date: form.date,
+        notes: encodedNotes, spentBy: form.spentBy, householdId,
+      });
       if (error) { showToast("Failed to update expense.", "error"); setIsSaving(false); return; }
       setExpenses((prev) => prev.map((e) => (e.id === editId ? { ...e, ...form, amount } : e)));
       showToast("Expense updated!");
       setEditId(null);
     } else {
-      const { data, error } = await supabase
-        .from("expenses")
-        .insert({ amount, category: form.category, date: form.date, notes: encodedNotes, spent_by: form.spentBy })
-        .select()
-        .single();
+      const { data, error } = await insertExpense({
+        amount, category: form.category, date: form.date, notes: encodedNotes,
+        spentBy: form.spentBy, householdId, userId: user.id,
+      });
       if (error) { showToast("Failed to add expense.", "error"); setIsSaving(false); return; }
       setExpenses((prev) => [mapRow(data), ...prev]);
       showToast("Expense added!");
@@ -271,10 +276,10 @@ function App() {
     if (!addAnother) setView("dashboard");
   };
 
-  // Supabase: delete expense by id
+  // Supabase: delete expense by id (scoped to household)
   const deleteExpense = async (id) => {
     setIsSaving(true);
-    const { error } = await supabase.from("expenses").delete().eq("id", id);
+    const { error } = await deleteExpenseService({ id, householdId });
     if (error) { showToast("Failed to delete expense.", "error"); setDeleteConfirm(null); setIsSaving(false); return; }
     setExpenses((prev) => prev.filter((e) => e.id !== id));
     setDeleteConfirm(null);
@@ -635,7 +640,7 @@ function App() {
               </span>
               <div>
                 <span className="logo-text">Nikhitha <span className="logo-heart">&amp;</span> Shravan</span>
-                <span className="logo-sub">Household Expense Tracker</span>
+                <span className="logo-sub">{household?.name || "Household Expense Tracker"}</span>
               </div>
             </div>
           </div>

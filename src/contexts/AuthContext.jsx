@@ -1,19 +1,31 @@
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { supabase } from "../supabaseClient";
+import { fetchHousehold } from "../services/householdService";
 
 const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
-  const [session, setSession] = useState(undefined); // undefined = loading
+  const [session, setSession] = useState(undefined); // undefined = initial loading
   const [profile, setProfile] = useState(null);
+  const [household, setHousehold] = useState(null);
+  const [profileLoading, setProfileLoading] = useState(false);
+  // Keep a ref to the current session so refreshProfile can access it without stale closure
+  const sessionRef = useRef(null);
 
-  // Fetch or create the profile row for a given user
+  const loadHousehold = async (householdId) => {
+    const { data } = await fetchHousehold(householdId);
+    setHousehold(data || null);
+  };
+
   const loadProfile = async (user) => {
+    setProfileLoading(true);
     const { data, error } = await supabase
       .from("profiles")
       .select("*")
       .eq("id", user.id)
       .single();
+
+    let profileData = data;
 
     if (error && error.code === "PGRST116") {
       // Row not found — create it
@@ -27,26 +39,43 @@ export function AuthProvider({ children }) {
         })
         .select()
         .single();
-      setProfile(created || null);
-    } else {
-      setProfile(data || null);
+      profileData = created;
     }
+
+    setProfile(profileData || null);
+
+    // Load the household if the profile has one
+    if (profileData?.household_id) {
+      await loadHousehold(profileData.household_id);
+    } else {
+      setHousehold(null);
+    }
+
+    setProfileLoading(false);
+  };
+
+  // Call this after an action that changes the profile (e.g. CreateHousehold)
+  const refreshProfile = async () => {
+    const user = sessionRef.current?.user;
+    if (user) await loadProfile(user);
   };
 
   useEffect(() => {
-    // Restore existing session on mount
     supabase.auth.getSession().then(({ data: { session } }) => {
+      sessionRef.current = session;
       setSession(session);
       if (session?.user) loadProfile(session.user);
     });
 
-    // Subscribe to auth changes (login, logout, token refresh)
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      sessionRef.current = session;
       setSession(session);
       if (session?.user) {
         loadProfile(session.user);
       } else {
         setProfile(null);
+        setHousehold(null);
+        setProfileLoading(false);
       }
     });
 
@@ -84,11 +113,11 @@ export function AuthProvider({ children }) {
   };
 
   const updateProfile = async (updates) => {
-    if (!session?.user) return { error: new Error("Not logged in") };
+    if (!sessionRef.current?.user) return { error: new Error("Not logged in") };
     const { data, error } = await supabase
       .from("profiles")
       .update({ ...updates, updated_at: new Date().toISOString() })
-      .eq("id", session.user.id)
+      .eq("id", sessionRef.current.user.id)
       .select()
       .single();
     if (!error) setProfile(data);
@@ -99,7 +128,12 @@ export function AuthProvider({ children }) {
     session,
     user: session?.user ?? null,
     profile,
+    household,
+    householdId: household?.id ?? null,
     loading: session === undefined,
+    profileLoading,
+    refreshProfile,
+    setHousehold,
     signUp,
     signIn,
     signOut,
