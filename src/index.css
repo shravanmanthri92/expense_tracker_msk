@@ -2,7 +2,61 @@
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-/* Password gate */
+/* ── Auth screens (Login / Signup / ForgotPassword) ─────────────────── */
+.auth-overlay {
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg, #fdf8f2);
+  padding: 24px;
+}
+.auth-card {
+  background: var(--surface, #fff);
+  border: 1px solid rgba(200, 155, 110, 0.2);
+  border-radius: 24px;
+  padding: 40px 32px;
+  width: 100%;
+  max-width: 380px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  box-shadow: 0 8px 32px rgba(249, 115, 22, 0.08);
+}
+.auth-logo { font-size: 40px; line-height: 1; }
+.auth-title { font-size: 24px; font-weight: 800; letter-spacing: -0.04em; }
+.auth-sub { font-size: 13px; color: var(--text2, #888); text-align: center; margin-bottom: 4px; }
+.auth-form { width: 100%; display: flex; flex-direction: column; gap: 0; margin-top: 4px; }
+.auth-error { font-size: 12px; color: #fb7185; margin-bottom: 8px; text-align: center; }
+.auth-link-btn {
+  background: none; border: none; color: var(--text3); cursor: pointer;
+  font-size: 13px; font: inherit; margin-top: 2px;
+  text-decoration: underline; text-underline-offset: 3px;
+}
+.auth-link-btn:hover { color: var(--accent); }
+.auth-switch { font-size: 13px; color: var(--text2); margin-top: 6px; }
+
+/* ── Header user area (name + sign-out) ─────────────────────────────── */
+.user-area {
+  display: flex; align-items: center; gap: 10px;
+  background: rgba(200, 155, 110, 0.08);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 6px 12px;
+}
+.user-name {
+  font-size: 13px; font-weight: 600; color: var(--text2);
+  max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.logout-btn {
+  font-size: 12px; padding: 6px 10px; border-radius: 10px;
+  background: rgba(239, 68, 68, 0.08); border-color: rgba(239, 68, 68, 0.2);
+  color: #ef4444;
+}
+.logout-btn:hover { background: rgba(239, 68, 68, 0.15); }
+
+/* Password gate (kept for reference, no longer used) */
 .gate-overlay {
   min-height: 100dvh;
   display: flex;

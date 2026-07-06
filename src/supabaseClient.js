@@ -4,10 +4,11 @@ import { createClient } from "@supabase/supabase-js";
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-if (!supabaseUrl || !supabaseAnonKey) {
-  throw new Error(
-    "Missing Supabase env vars. Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to your .env file."
-  );
-}
+export const supabaseMisconfigured = !supabaseUrl || !supabaseAnonKey;
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+// Create a real client only when credentials are present.
+// If missing, export a dummy so the module graph doesn't crash on import —
+// the app will show a setup error screen instead of a blank page.
+export const supabase = supabaseMisconfigured
+  ? /** @type {any} */ ({})
+  : createClient(supabaseUrl, supabaseAnonKey);

@@ -1,49 +1,9 @@
 import { useState, useEffect, useMemo } from "react";
 import { supabase } from "./supabaseClient";
-
-const UNLOCK_KEY = "spendly_unlocked";
-const CORRECT_PASSWORD = import.meta.env.VITE_APP_PASSWORD;
-
-function PasswordGate({ children }) {
-  const [unlocked, setUnlocked] = useState(
-    () => sessionStorage.getItem(UNLOCK_KEY) === "1"
-  );
-  const [input, setInput] = useState("");
-  const [error, setError] = useState(false);
-
-  const attempt = () => {
-    if (input === CORRECT_PASSWORD) {
-      sessionStorage.setItem(UNLOCK_KEY, "1");
-      setUnlocked(true);
-    } else {
-      setError(true);
-      setInput("");
-    }
-  };
-
-  if (unlocked) return children;
-
-  return (
-    <div className="gate-overlay">
-      <div className="gate-card">
-        <div className="gate-logo">🏡</div>
-        <h1 className="gate-title">Spendly</h1>
-        <p className="gate-sub">Nikhitha &amp; Shravan's expense tracker</p>
-        <input
-          className={`form-input gate-input${error ? " gate-input-error" : ""}`}
-          type="password"
-          placeholder="Enter password"
-          value={input}
-          autoFocus
-          onChange={(e) => { setInput(e.target.value); setError(false); }}
-          onKeyDown={(e) => e.key === "Enter" && attempt()}
-        />
-        {error && <p className="gate-error">Incorrect password. Try again.</p>}
-        <button className="btn btn-primary gate-btn" onClick={attempt}>Unlock</button>
-      </div>
-    </div>
-  );
-}
+import { useAuth } from "./contexts/AuthContext";
+import Login from "./components/Login";
+import Signup from "./components/Signup";
+import ForgotPassword from "./components/ForgotPassword";
 
 const CATEGORIES = [
   { id: "food", label: "Food & Dining", icon: "🍽️", color: "#ff8a65" },
@@ -109,14 +69,52 @@ const buildPieGradient = (items) => {
 };
 
 export default function SpendlyApp() {
-  return (
-    <PasswordGate>
-      <App />
-    </PasswordGate>
-  );
+  const { session, loading } = useAuth();
+  const [authView, setAuthView] = useState("login"); // "login" | "signup" | "forgot"
+
+  // While Supabase restores the session, show nothing (avoids flash)
+  if (loading) {
+    return (
+      <div className="auth-overlay">
+        <div className="db-loading" style={{ paddingTop: 0 }}>Loading…</div>
+      </div>
+    );
+  }
+
+  if (!session) {
+    if (authView === "signup") {
+      return <Signup onSwitchToLogin={() => setAuthView("login")} />;
+    }
+    if (authView === "forgot") {
+      return <ForgotPassword onBack={() => setAuthView("login")} />;
+    }
+    return (
+      <Login
+        onSwitchToSignup={() => setAuthView("signup")}
+        onForgotPassword={() => setAuthView("forgot")}
+      />
+    );
+  }
+
+  // Session active — also handle password-reset redirect
+  const isResetRedirect = new URLSearchParams(window.location.search).get("reset") === "1";
+  if (isResetRedirect) {
+    return <ForgotPassword onBack={() => window.history.replaceState({}, document.title, window.location.pathname)} />;
+  }
+
+  return <App />;
 }
 
 function App() {
+  const { user, profile, signOut } = useAuth();
+  const [loggingOut, setLoggingOut] = useState(false);
+
+  const handleSignOut = async () => {
+    setLoggingOut(true);
+    await signOut();
+    setLoggingOut(false);
+  };
+
   // Supabase: expenses are loaded from the DB, not localStorage
   const [expenses, setExpenses] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -659,6 +657,17 @@ function App() {
             <button className="export-btn" onClick={() => setExportOpen(true)}>
               Export CSV ↓
             </button>
+            <div className="user-area">
+              <span className="user-name">{profile?.display_name || user?.email?.split("@")[0] || "Account"}</span>
+              <button
+                className="btn btn-ghost btn-sm logout-btn"
+                onClick={handleSignOut}
+                disabled={loggingOut}
+                title="Sign out"
+              >
+                {loggingOut ? "…" : "Sign out"}
+              </button>
+            </div>
           </div>
         </div>
       </header>
