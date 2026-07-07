@@ -29,7 +29,12 @@ export default function Signup({ onSwitchToLogin }) {
     setLoading(false);
 
     if (authError) {
-      setError(authError.message);
+      const msg = authError.message?.toLowerCase() || "";
+      if (msg.includes("rate limit") || msg.includes("too many") || msg.includes("exceeded")) {
+        setError("Sign-up emails are temporarily limited. Please try again in a few minutes, or ask the app admin to disable email confirmation in Supabase.");
+      } else {
+        setError(authError.message);
+      }
     } else {
       setDone(true);
     }
