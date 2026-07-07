@@ -35,8 +35,6 @@ export default function CreateHousehold() {
         <h1 className="auth-title">Create your household</h1>
         <p className="auth-sub">
           Give your household a name — this will be shared with everyone you invite later.
-          <br />
-          <span style={{ fontStyle: "italic" }}>e.g. "Shravan &amp; Nikhitha"</span>
         </p>
 
         <form className="auth-form" onSubmit={handleCreate} noValidate>
@@ -46,7 +44,7 @@ export default function CreateHousehold() {
               id="household-name"
               className="form-input"
               type="text"
-              placeholder="e.g. Shravan & Nikhitha"
+              placeholder="e.g. The Khans / Our Home"
               value={name}
               autoFocus
               maxLength={60}
