@@ -1,16 +1,17 @@
 import { useState } from "react";
 import { useAuth } from "../contexts/AuthContext";
 
-export default function ForgotPassword({ onBack }) {
+export default function ForgotPassword({ onBack, isResetMode: isResetModeProp }) {
   const { resetPassword, updatePassword } = useAuth();
   const [email, setEmail] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [sent, setSent] = useState(false);
 
-  // Update-password mode: user landed back from the reset email link
-  const isResetMode = typeof window !== "undefined" &&
-    new URLSearchParams(window.location.search).get("reset") === "1";
+  // Update-password mode: driven by PASSWORD_RECOVERY auth event (prop) or legacy ?reset=1 param
+  const isResetMode = isResetModeProp ??
+    (typeof window !== "undefined" &&
+      new URLSearchParams(window.location.search).get("reset") === "1");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [updated, setUpdated] = useState(false);
@@ -38,7 +39,16 @@ export default function ForgotPassword({ onBack }) {
     const { error: authError } = await updatePassword(newPassword);
     setLoading(false);
     if (authError) {
-      setError(authError.message);
+      // Provide a clearer message if the session/token has expired
+      if (
+        authError.message?.toLowerCase().includes("expired") ||
+        authError.message?.toLowerCase().includes("invalid") ||
+        authError.status === 401
+      ) {
+        setError("This reset link has expired or was already used. Please request a new one.");
+      } else {
+        setError(authError.message);
+      }
     } else {
       setUpdated(true);
       // Remove the ?reset=1 param cleanly

@@ -443,20 +443,15 @@ select.form-input option { color: #1c1108; }
 .spent-nikhitha { background: rgba(236, 72, 153, 0.14); color: #db2777; }
 
 /* Spent-by toggle buttons in Add Expense form */
-.spentby-toggle { display: flex; gap: 10px; }
+.spentby-toggle { display: flex; gap: 10px; flex-wrap: wrap; }
 .spentby-btn {
-  flex: 1; padding: 13px; border-radius: 14px;
+  flex: 1; min-width: 80px; padding: 13px; border-radius: 14px;
   border: 2px solid var(--border); background: transparent;
   color: var(--text2); cursor: pointer; font-weight: 700; font-size: 15px;
   transition: all 0.15s;
 }
 .spentby-btn:hover { background: rgba(200, 155, 110, 0.10); color: var(--text); }
-.spentby-btn.spentby-shravan.active {
-  border-color: #3b82f6; background: rgba(59, 130, 246, 0.10); color: #2563eb;
-}
-.spentby-btn.spentby-nikhitha.active {
-  border-color: #ec4899; background: rgba(236, 72, 153, 0.10); color: #db2777;
-}
+.spentby-btn.active { font-weight: 800; }
 
 /* Supabase loading / error states */
 .db-loading {
@@ -471,6 +466,25 @@ select.form-input option { color: #1c1108; }
   font-size: 14px; font-weight: 600;
 }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+/* Loading skeletons */
+.skeleton-row {
+  background: linear-gradient(
+    90deg,
+    rgba(200, 155, 110, 0.12) 25%,
+    rgba(200, 155, 110, 0.04) 50%,
+    rgba(200, 155, 110, 0.12) 75%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-pulse 1.6s ease-in-out infinite;
+  border-radius: 14px;
+  height: 60px;
+}
+.skeleton-stat { height: 90px; border-radius: 22px; }
+@keyframes skeleton-pulse {
+  0%   { background-position:  200% 0; }
+  100% { background-position: -200% 0; }
+}
 
 @media (max-width: 900px) {
   .hero-card, .dashboard-grid, .two-col { grid-template-columns: 1fr; }
@@ -887,6 +901,47 @@ select.form-input option { color: #1c1108; }
 }
 
 /* ── Budget card ───────────────────────────────────────────── */
+.members-card {
+  padding: 20px 24px;
+  margin-bottom: 20px;
+}
+.members-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.member-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  border-radius: 20px;
+  border: 1.5px solid;
+  font-size: 13px;
+  font-weight: 600;
+}
+.member-chip-remove {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 0 2px;
+  opacity: 0.7;
+  color: inherit;
+}
+.member-chip-remove:hover { opacity: 1; }
+.member-add-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.member-add-input {
+  flex: 1;
+  min-width: 0;
+}
+
 .budget-card {
   padding: 20px 24px;
   margin-bottom: 20px;

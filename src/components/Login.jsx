@@ -32,7 +32,7 @@ export default function Login({ onSwitchToSignup, onForgotPassword }) {
       <div className="auth-card">
         <div className="auth-logo">🏡</div>
         <h1 className="auth-title">Spendly</h1>
-        <p className="auth-sub">Nikhitha &amp; Shravan's expense tracker</p>
+        <p className="auth-sub">Shared household expense tracker</p>
 
         <form className="auth-form" onSubmit={handleSubmit} noValidate>
           <div className="form-group">

@@ -6,6 +6,7 @@ import Signup from "./components/Signup";
 import ForgotPassword from "./components/ForgotPassword";
 import CreateHousehold from "./components/CreateHousehold";
 import { fetchExpenses as fetchExpensesService, insertExpense, updateExpense as updateExpenseService, deleteExpense as deleteExpenseService } from "./services/expenseService";
+import { fetchHouseholdBudget as fetchHouseholdBudgetFn, upsertHouseholdBudget as upsertHouseholdBudgetFn } from "./services/householdService";
 
 const CATEGORIES = [
   { id: "food", label: "Food & Dining", icon: "🍽️", color: "#ff8a65" },
@@ -52,7 +53,7 @@ const mapRow = (row) => {
     description: isRecurring ? rawNotes.slice(0, -3) : rawNotes,
     category: row.category,
     date: row.date,
-    spentBy: row.spent_by || "Shravan",
+    spentBy: row.spent_by || "",
     isRecurring,
   };
 };
@@ -71,7 +72,7 @@ const buildPieGradient = (items) => {
 };
 
 export default function SpendlyApp() {
-  const { session, loading, profileLoading, profile } = useAuth();
+  const { session, loading, profileLoading, profile, isPasswordRecovery, clearPasswordRecovery } = useAuth();
   const [authView, setAuthView] = useState("login"); // "login" | "signup" | "forgot"
 
   // Wait for session restore AND profile/household load before rendering
@@ -98,10 +99,17 @@ export default function SpendlyApp() {
     );
   }
 
-  // Session active — handle password-reset redirect
-  const isResetRedirect = new URLSearchParams(window.location.search).get("reset") === "1";
-  if (isResetRedirect) {
-    return <ForgotPassword onBack={() => window.history.replaceState({}, document.title, window.location.pathname)} />;
+  // Session active — handle password-reset redirect (detected via PASSWORD_RECOVERY auth event)
+  if (isPasswordRecovery) {
+    return (
+      <ForgotPassword
+        isResetMode={true}
+        onBack={() => {
+          clearPasswordRecovery();
+          window.history.replaceState({}, document.title, window.location.pathname);
+        }}
+      />
+    );
   }
 
   // Logged in but no household yet — prompt to create one
@@ -113,7 +121,20 @@ export default function SpendlyApp() {
 }
 
 function App() {
-  const { user, profile, household, householdId, signOut } = useAuth();
+  const { user, profile, household, householdId, signOut, householdMembers } = useAuth();
+  const [extraMembers, setExtraMembers] = useState([]);
+  const allMembers = useMemo(() => [...householdMembers, ...extraMembers], [householdMembers, extraMembers]);
+  const MEMBER_COLORS = ["#3b82f6", "#ec4899", "#10b981", "#f59e0b", "#8b5cf6", "#ef4444"];
+  const getMemberColor = (name) => {
+    const idx = allMembers.findIndex((m) => m.display_name === name);
+    return MEMBER_COLORS[Math.max(0, idx) % MEMBER_COLORS.length];
+  };
+  const memberPillStyle = (name) => {
+    if (!name) return { background: "rgba(148,163,184,0.12)", color: "#94a3b8" };
+    const color = getMemberColor(name);
+    return { background: `${color}22`, color };
+  };
+  const defaultSpentBy = profile?.display_name || allMembers[0]?.display_name || "";
   const [loggingOut, setLoggingOut] = useState(false);
 
   const handleSignOut = async () => {
@@ -128,7 +149,7 @@ function App() {
   const [dbError, setDbError] = useState(null);
   const [isSaving, setIsSaving] = useState(false);
   const [view, setView] = useState("dashboard");
-  const [form, setForm] = useState({ amount: "", description: "", category: "food", date: todayISO(), spentBy: "Shravan", isRecurring: false });
+  const [form, setForm] = useState({ amount: "", description: "", category: "food", date: todayISO(), spentBy: profile?.display_name || "", isRecurring: false });
   const [editId, setEditId] = useState(null);
   const [filterCat, setFilterCat] = useState("all");
   const [filterMonth, setFilterMonth] = useState("all");
@@ -157,6 +178,7 @@ function App() {
   const [catLimits, setCatLimits] = useState({});
   const [catLimitEditing, setCatLimitEditing] = useState(null);
   const [catLimitDraft, setCatLimitDraft] = useState("");
+  const [memberInput, setMemberInput] = useState("");
   const [pieMonth, setPieMonth] = useState("all");
   const [selectedPieCat, setSelectedPieCat] = useState(null);
 
@@ -165,49 +187,68 @@ function App() {
     setHistoryPageSize(50);
   }, [filterCat, filterMonth, filterSpentBy, searchQ, sortBy]);
 
-  // Supabase: upsert a single settings row
+  // Supabase: upsert a single settings row (household-scoped)
   const upsertSetting = async (key, value) => {
     await supabase
       .from("settings")
-      .upsert({ key, value: JSON.stringify(value), updated_at: new Date().toISOString() }, { onConflict: "key" });
+      .upsert({ key, value: JSON.stringify(value), household_id: householdId, updated_at: new Date().toISOString() }, { onConflict: "household_id,key" });
   };
 
-  // Supabase: fetch settings (budget + catLimits) and migrate any localStorage values
+  // Supabase: fetch settings (budget from household_budgets, catLimits from settings)
   const fetchSettings = async () => {
-    const { data } = await supabase.from("settings").select("key, value");
-    const map = Object.fromEntries((data || []).map((r) => [r.key, r.value]));
+    const currentMonthKey = `${currentYear}-${String(currentMonth + 1).padStart(2, "0")}`;
 
-    // --- budget ---
-    const dbBudget = map["budget"] ? parseFloat(JSON.parse(map["budget"])) : null;
-    const lsBudget = localStorage.getItem("expenseBudget");
-    if (dbBudget !== null) {
-      setBudget(dbBudget);
-    } else if (lsBudget) {
-      const val = parseFloat(lsBudget) || 0;
-      setBudget(val);
-      await upsertSetting("budget", val);
+    // --- budget from household_budgets ---
+    const { data: budgetRow } = await fetchHouseholdBudgetFn(householdId, currentMonthKey);
+    if (budgetRow) {
+      setBudget(parseFloat(budgetRow.budget_amount));
+    } else {
+      const lsBudget = localStorage.getItem("expenseBudget");
+      if (lsBudget) {
+        const val = parseFloat(lsBudget) || 0;
+        setBudget(val);
+        if (val > 0) await upsertHouseholdBudgetFn(householdId, currentMonthKey, val);
+      }
+      localStorage.removeItem("expenseBudget");
     }
-    localStorage.removeItem("expenseBudget");
 
-    // --- catLimits ---
+    // --- catLimits from household-scoped settings ---
+    const { data: settingsRows } = await supabase
+      .from("settings")
+      .select("key, value")
+      .eq("household_id", householdId);
+    const map = Object.fromEntries((settingsRows || []).map((r) => [r.key, r.value]));
     const dbLimits = map["cat_limits"] ? JSON.parse(JSON.parse(map["cat_limits"])) : null;
-    const lsLimits = localStorage.getItem("catLimits");
     if (dbLimits !== null) {
       setCatLimits(dbLimits);
-    } else if (lsLimits) {
-      try {
-        const val = JSON.parse(lsLimits);
-        setCatLimits(val);
-        await upsertSetting("cat_limits", val);
-      } catch { /* ignore */ }
+    } else {
+      const lsLimits = localStorage.getItem("catLimits");
+      if (lsLimits) {
+        try {
+          const val = JSON.parse(lsLimits);
+          setCatLimits(val);
+          await upsertSetting("cat_limits", val);
+        } catch { /* ignore */ }
+      }
+      localStorage.removeItem("catLimits");
     }
-    localStorage.removeItem("catLimits");
+
+    // --- extra partner names from settings ---
+    const partnerNames = map["partner_names"] ? JSON.parse(map["partner_names"]) : [];
+    setExtraMembers((partnerNames || []).map((n, idx) => ({ id: `extra-${idx}`, display_name: n })));
   };
 
-  // Persist budget to Supabase + local state
+  // Persist budget to household_budgets + local state
   const saveBudget = async (val) => {
     setBudget(val);
-    await upsertSetting("budget", val);
+    const currentMonthKey = `${currentYear}-${String(currentMonth + 1).padStart(2, "0")}`;
+    await upsertHouseholdBudgetFn(householdId, currentMonthKey, val);
+  };
+
+  // Save extra (non-account) household member names to settings
+  const saveExtraMembers = async (names) => {
+    setExtraMembers(names.map((n, idx) => ({ id: `extra-${idx}`, display_name: n })));
+    await upsertSetting("partner_names", names);
   };
 
   // Persist catLimits to Supabase + local state
@@ -272,7 +313,7 @@ function App() {
       showToast("Expense added!");
     }
     setIsSaving(false);
-    setForm({ amount: "", description: "", category: "food", date: todayISO(), spentBy: "Shravan", isRecurring: false });
+    setForm({ amount: "", description: "", category: "food", date: todayISO(), spentBy: defaultSpentBy, isRecurring: false });
     if (!addAnother) setView("dashboard");
   };
 
@@ -288,14 +329,14 @@ function App() {
   };
 
   const startEdit = (e) => {
-    setForm({ amount: String(e.amount), description: e.description, category: e.category, date: e.date, spentBy: e.spentBy || "Shravan", isRecurring: e.isRecurring || false });
+    setForm({ amount: String(e.amount), description: e.description, category: e.category, date: e.date, spentBy: e.spentBy || defaultSpentBy, isRecurring: e.isRecurring || false });
     setEditId(e.id);
     setView("add");
   };
 
   const cancelEdit = () => {
     setEditId(null);
-    setForm({ amount: "", description: "", category: "food", date: todayISO(), spentBy: "Shravan", isRecurring: false });
+    setForm({ amount: "", description: "", category: "food", date: todayISO(), spentBy: defaultSpentBy, isRecurring: false });
     setView("history");
   };
 
@@ -318,6 +359,25 @@ function App() {
   const totalThisMonth = useMemo(() => thisMonthExpenses.reduce((s, e) => s + e.amount, 0), [thisMonthExpenses]);
   const totalAll = useMemo(() => expenses.reduce((s, e) => s + e.amount, 0), [expenses]);
   const averageSpend = useMemo(() => (expenses.length ? totalAll / expenses.length : 0), [expenses, totalAll]);
+
+  const todayStr = useMemo(() => todayISO(), []);
+  const todayTotal = useMemo(
+    () => expenses.filter((e) => e.date === todayStr).reduce((s, e) => s + e.amount, 0),
+    [expenses, todayStr]
+  );
+  const weekStartStr = useMemo(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - d.getDay());
+    return d.toISOString().split("T")[0];
+  }, []);
+  const thisWeekTotal = useMemo(
+    () => expenses.filter((e) => e.date >= weekStartStr).reduce((s, e) => s + e.amount, 0),
+    [expenses, weekStartStr]
+  );
+  const largestThisMonth = useMemo(
+    () => thisMonthExpenses.reduce((max, e) => (!max || e.amount > max.amount ? e : max), null),
+    [thisMonthExpenses]
+  );
 
   const catTotals = useMemo(() => {
     const map = {};
@@ -459,31 +519,30 @@ function App() {
     const monthExpenses = expenses.filter((e) => e.date.startsWith(analyticsMonth));
     const totals = {};
     monthExpenses.forEach((e) => {
-      const person = e.spentBy || "Shravan";
-      totals[person] = (totals[person] || 0) + e.amount;
+      if (e.spentBy) totals[e.spentBy] = (totals[e.spentBy] || 0) + e.amount;
     });
-    const people = [
-      { name: "Shravan", color: "#3b82f6", emoji: "✋" },
-      { name: "Nikhitha", color: "#ec4899", emoji: "👋" },
-    ];
     const grandTotal = Object.values(totals).reduce((s, v) => s + v, 0);
     return {
-      rows: people.map((p) => ({ ...p, total: totals[p.name] || 0 })),
+      rows: allMembers.map((m, i) => ({
+        name: m.display_name,
+        color: MEMBER_COLORS[i % MEMBER_COLORS.length],
+        total: totals[m.display_name] || 0,
+      })),
       grandTotal,
     };
-  }, [expenses, analyticsMonth]);
+  }, [expenses, analyticsMonth, allMembers]);
 
   const thisMonthByPerson = useMemo(() => {
     const totals = {};
     thisMonthExpenses.forEach((e) => {
-      const p = e.spentBy || "Shravan";
-      totals[p] = (totals[p] || 0) + e.amount;
+      if (e.spentBy) totals[e.spentBy] = (totals[e.spentBy] || 0) + e.amount;
     });
-    return [
-      { name: "Shravan", color: "#3b82f6", emoji: "✋", total: totals["Shravan"] || 0 },
-      { name: "Nikhitha", color: "#ec4899", emoji: "👋", total: totals["Nikhitha"] || 0 },
-    ];
-  }, [thisMonthExpenses]);
+    return allMembers.map((m, i) => ({
+      name: m.display_name,
+      color: MEMBER_COLORS[i % MEMBER_COLORS.length],
+      total: totals[m.display_name] || 0,
+    }));
+  }, [thisMonthExpenses, allMembers]);
 
   const prevMonthExpenses = useMemo(
     () => expenses.filter((e) => {
@@ -503,14 +562,14 @@ function App() {
   const prevMonthByPerson = useMemo(() => {
     const totals = {};
     prevMonthExpenses.forEach((e) => {
-      const p = e.spentBy || "Shravan";
-      totals[p] = (totals[p] || 0) + e.amount;
+      if (e.spentBy) totals[e.spentBy] = (totals[e.spentBy] || 0) + e.amount;
     });
-    return [
-      { name: "Shravan", color: "#3b82f6", emoji: "✋", total: totals["Shravan"] || 0 },
-      { name: "Nikhitha", color: "#ec4899", emoji: "👋", total: totals["Nikhitha"] || 0 },
-    ];
-  }, [prevMonthExpenses]);
+    return allMembers.map((m, i) => ({
+      name: m.display_name,
+      color: MEMBER_COLORS[i % MEMBER_COLORS.length],
+      total: totals[m.display_name] || 0,
+    }));
+  }, [prevMonthExpenses, allMembers]);
 
   const prevTopCategory = useMemo(() => {
     const map = {};
@@ -631,16 +690,14 @@ function App() {
           <div className="logo-wrap" onClick={() => { if (editId) cancelEdit(); setView("dashboard"); }} style={{ cursor: "pointer" }}>
             <div className="logo">
               <span className="logo-icon">
-                <svg width="30" height="24" viewBox="0 0 30 24" xmlns="http://www.w3.org/2000/svg">
-                  {/* N — anchored at bottom */}
-                  <text x="1" y="21" fontFamily="Inter, sans-serif" fontWeight="900" fontSize="19" fill="white">N</text>
-                  {/* S — raised 4px to create a staircase monogram feel */}
-                  <text x="16" y="17" fontFamily="Inter, sans-serif" fontWeight="900" fontSize="19" fill="rgba(255,255,255,0.88)">S</text>
+                <svg width="26" height="26" viewBox="0 0 26 26" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <circle cx="13" cy="13" r="10.5" stroke="rgba(255,255,255,0.55)" strokeWidth="1.5"/>
+                  <text x="13" y="18" textAnchor="middle" fontFamily="Inter, sans-serif" fontWeight="900" fontSize="14" fill="white">S</text>
                 </svg>
               </span>
               <div>
-                <span className="logo-text">Nikhitha <span className="logo-heart">&amp;</span> Shravan</span>
-                <span className="logo-sub">{household?.name || "Household Expense Tracker"}</span>
+                <span className="logo-text">Spendly</span>
+                <span className="logo-sub">{household?.name || "Household Tracker"}</span>
               </div>
             </div>
           </div>
@@ -679,7 +736,16 @@ function App() {
 
       <main className="main">
         {/* Supabase: loading and error states */}
-        {loading && <div className="db-loading">Loading expenses…</div>}
+        {loading && (
+          <div className="page">
+            <div className="stat-grid" style={{ marginBottom: 24 }}>
+              {[1, 2, 3, 4].map((i) => <div key={i} className="skeleton-row skeleton-stat" />)}
+            </div>
+            <div className="card" style={{ padding: 20 }}>
+              {[1, 2, 3, 4, 5].map((i) => <div key={i} className="skeleton-row" style={{ marginBottom: 10 }} />)}
+            </div>
+          </div>
+        )}
         {!loading && dbError && (
           <div className="db-error">
             Could not load data — {dbError}.
@@ -690,10 +756,17 @@ function App() {
           <div className="page">
             <section className="hero-card">
               <div className="hero-copy">
-                <span className="eyebrow">🏡 Home · {MONTHS[currentMonth]} {currentYear}</span>
-                <h1 className="hero-title">Our home, Our money — tracked together.</h1>
+                <span className="eyebrow">🏡 {household?.name || "Home"} · {MONTHS[currentMonth]} {currentYear}</span>
+                <h1 className="hero-title">Shared expenses, tracked together.</h1>
                 <p className="hero-sub">
-                  A shared space for Nikhitha &amp; Shravan to log expenses, spot trends, and stay on top of household spending — all in one place.
+                  A shared space for{" "}
+                  {allMembers.length > 0
+                    ? allMembers.map((m, i) => (
+                        <span key={m.id}>{i > 0 && " & "}<strong>{m.display_name}</strong></span>
+                      ))
+                    : <strong>{household?.name || "your household"}</strong>
+                  }{" "}
+                  to log, track, and stay on top of household spending — all in one place.
                 </p>
                 <div className="hero-actions">
                   <button className="btn btn-primary" onClick={() => setView("add")}>Add Expense</button>
@@ -750,11 +823,82 @@ function App() {
               </div>
               {thisMonthByPerson.map((p) => (
                 <div key={p.name} className="stat-card">
-                  <span className="stat-label">{p.emoji} {p.name}</span>
+                  <span className="stat-label" style={{ color: p.color }}>● {p.name}</span>
                   <span className="stat-value" style={{ color: p.color }}>{fmt(p.total, currency)}</span>
                   <span className="stat-meta">this month</span>
                 </div>
               ))}
+              <div className="stat-card">
+                <span className="stat-label">Today</span>
+                <span className="stat-value">{fmt(todayTotal, currency)}</span>
+                <span className="stat-meta">{expenses.filter((e) => e.date === todayStr).length} transactions</span>
+              </div>
+              <div className="stat-card">
+                <span className="stat-label">This Week</span>
+                <span className="stat-value">{fmt(thisWeekTotal, currency)}</span>
+                <span className="stat-meta">since {new Date(weekStartStr + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })}</span>
+              </div>
+              <div className="stat-card">
+                <span className="stat-label">Largest (this month)</span>
+                <span className="stat-value" style={{ fontSize: "18px" }}>{largestThisMonth ? fmt(largestThisMonth.amount, currency) : "—"}</span>
+                <span className="stat-meta">{largestThisMonth ? largestThisMonth.description : "no expenses yet"}</span>
+              </div>
+            </div>
+
+            <div className="card members-card elevated-card">
+              <div className="budget-header">
+                <span className="budget-title">Household Members</span>
+              </div>
+              <div className="members-chips">
+                {allMembers.map((m, i) => {
+                  const color = MEMBER_COLORS[i % MEMBER_COLORS.length];
+                  const isExtra = m.id.toString().startsWith("extra-");
+                  return (
+                    <span key={m.id} className="member-chip" style={{ background: `${color}18`, color, borderColor: `${color}55` }}>
+                      {m.display_name}
+                      {isExtra && (
+                        <button
+                          className="member-chip-remove"
+                          aria-label={`Remove ${m.display_name}`}
+                          onClick={() => {
+                            const names = extraMembers.filter((x) => x.id !== m.id).map((x) => x.display_name);
+                            saveExtraMembers(names);
+                          }}
+                        >×</button>
+                      )}
+                    </span>
+                  );
+                })}
+              </div>
+              <div className="member-add-row">
+                <input
+                  className="form-input member-add-input"
+                  type="text"
+                  placeholder="Add partner name…"
+                  value={memberInput}
+                  maxLength={40}
+                  onChange={(e) => setMemberInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      const name = memberInput.trim();
+                      if (name && !allMembers.some((m) => m.display_name.toLowerCase() === name.toLowerCase())) {
+                        saveExtraMembers([...extraMembers.map((x) => x.display_name), name]);
+                        setMemberInput("");
+                      }
+                    }
+                  }}
+                />
+                <button
+                  className="btn btn-primary btn-sm"
+                  onClick={() => {
+                    const name = memberInput.trim();
+                    if (name && !allMembers.some((m) => m.display_name.toLowerCase() === name.toLowerCase())) {
+                      saveExtraMembers([...extraMembers.map((x) => x.display_name), name]);
+                      setMemberInput("");
+                    }
+                  }}
+                >Add</button>
+              </div>
             </div>
 
             <div className="card budget-card elevated-card">
@@ -829,7 +973,7 @@ function App() {
                           <span className="tx-desc">{e.description}{e.isRecurring && <span className="recurring-badge" title="Recurring">🔁</span>}</span>
                             <span className="tx-date">{fmtDate(e.date)} · {cat.label}</span>
                           </div>
-                          <span className={`spent-pill spent-${(e.spentBy || "shravan").toLowerCase()}`}>{e.spentBy || "Shravan"}</span>
+                          <span className="spent-pill" style={memberPillStyle(e.spentBy)}>{e.spentBy || "—"}</span>
                           <span className="tx-amount">{fmt(e.amount, currency)}</span>
                         </li>
                       );
@@ -948,16 +1092,21 @@ function App() {
               <div className="form-group">
                 <label className="form-label">Spent by</label>
                 <div className="spentby-toggle">
-                  {[["Shravan", "✋"], ["Nikhitha", "👋"]].map(([person, emoji]) => (
-                    <button
-                      key={person}
-                      type="button"
-                      className={`spentby-btn spentby-${person.toLowerCase()}${form.spentBy === person ? " active" : ""}`}
-                      onClick={() => setForm((f) => ({ ...f, spentBy: person }))}
-                    >
-                      {emoji} {person}
-                    </button>
-                  ))}
+                  {allMembers.map((m, i) => {
+                    const color = MEMBER_COLORS[i % MEMBER_COLORS.length];
+                    const isActive = form.spentBy === m.display_name;
+                    return (
+                      <button
+                        key={m.id}
+                        type="button"
+                        className={`spentby-btn${isActive ? " active" : ""}`}
+                        style={isActive ? { borderColor: color, background: `${color}18`, color } : {}}
+                        onClick={() => setForm((f) => ({ ...f, spentBy: m.display_name }))}
+                      >
+                        {m.display_name}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
@@ -1011,8 +1160,9 @@ function App() {
               </select>
               <select className="form-input" value={filterSpentBy} onChange={(e) => setFilterSpentBy(e.target.value)}>
                 <option value="all">All members</option>
-                <option value="Shravan">✋ Shravan</option>
-                <option value="Nikhitha">👋 Nikhitha</option>
+                {allMembers.map((m) => (
+                  <option key={m.id} value={m.display_name}>{m.display_name}</option>
+                ))}
               </select>
               <select className="form-input" value={sortBy} onChange={(e) => setSortBy(e.target.value)} aria-label="Sort by">
                 <option value="date-desc">Date: Newest first</option>
@@ -1041,7 +1191,7 @@ function App() {
                           <span className="tx-desc">{e.description}{e.isRecurring && <span className="recurring-badge" title="Recurring">🔁</span>}</span>
                           <span className="tx-date">{fmtDate(e.date)} · {cat.label}</span>
                         </div>
-                        <span className={`spent-pill spent-${(e.spentBy || "shravan").toLowerCase()}`}>{e.spentBy || "Shravan"}</span>
+                        <span className="spent-pill" style={memberPillStyle(e.spentBy)}>{e.spentBy || "—"}</span>
                         <span className="tx-amount">{fmt(e.amount, currency)}</span>
                         <div className="tx-actions visible-actions">
                           <button className="icon-btn" title="Edit" onClick={() => startEdit(e)}>✏️</button>
@@ -1219,7 +1369,7 @@ function App() {
                                   <li key={e.id} className="pie-drilldown-row">
                                     <span className="pie-dd-date">{e.date}</span>
                                     <span className="pie-dd-desc">{e.description}{e.isRecurring ? " 🔁" : ""}</span>
-                                    <span className="pie-dd-person">{e.spentBy}</span>
+                                    <span className="pie-dd-person" style={memberPillStyle(e.spentBy)}>{e.spentBy || "—"}</span>
                                     <span className="pie-dd-amt">{fmt(e.amount, currency)}</span>
                                   </li>
                                 ))}
@@ -1288,7 +1438,7 @@ function App() {
                       return (
                         <li key={p.name} className="person-month-item">
                           <div className="person-month-row">
-                            <span className={`person-month-pill spent-${p.name.toLowerCase()}`}>{p.emoji} {p.name}</span>
+                            <span className={`person-month-pill`} style={memberPillStyle(p.name)}>{p.name}</span>
                             <span className="person-month-amt">{fmt(p.total, currency)}</span>
                             <span className="person-month-pct">{Math.round(pct)}%</span>
                           </div>

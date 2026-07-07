@@ -35,3 +35,53 @@ export async function fetchHousehold(householdId) {
     .single();
   return { data: data || null, error };
 }
+
+/**
+ * Fetch all member profiles that belong to a household.
+ * Returns { data: profile[], error }.
+ */
+export async function fetchHouseholdMembers(householdId) {
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("id, display_name, email")
+    .eq("household_id", householdId)
+    .order("created_at", { ascending: true });
+  return { data: data || [], error };
+}
+
+/**
+ * Fetch the monthly budget row for a household+month pair.
+ * month format: 'YYYY-MM'.
+ * Returns { data: row | null, error }.
+ */
+export async function fetchHouseholdBudget(householdId, month) {
+  const { data, error } = await supabase
+    .from("household_budgets")
+    .select("*")
+    .eq("household_id", householdId)
+    .eq("month", month)
+    .maybeSingle();
+  return { data: data || null, error };
+}
+
+/**
+ * Upsert (insert or update) the monthly budget for a household.
+ * Returns { data, error }.
+ */
+export async function upsertHouseholdBudget(householdId, month, budgetAmount, currency = "INR") {
+  const { data, error } = await supabase
+    .from("household_budgets")
+    .upsert(
+      {
+        household_id: householdId,
+        month,
+        budget_amount: budgetAmount,
+        currency,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "household_id,month" }
+    )
+    .select()
+    .single();
+  return { data, error };
+}

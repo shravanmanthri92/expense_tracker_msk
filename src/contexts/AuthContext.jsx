@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { supabase } from "../supabaseClient";
-import { fetchHousehold } from "../services/householdService";
+import { fetchHousehold, fetchHouseholdMembers } from "../services/householdService";
 
 const AuthContext = createContext(null);
 
@@ -8,13 +8,19 @@ export function AuthProvider({ children }) {
   const [session, setSession] = useState(undefined); // undefined = initial loading
   const [profile, setProfile] = useState(null);
   const [household, setHousehold] = useState(null);
+  const [householdMembers, setHouseholdMembers] = useState([]);
   const [profileLoading, setProfileLoading] = useState(false);
+  const [isPasswordRecovery, setIsPasswordRecovery] = useState(false);
   // Keep a ref to the current session so refreshProfile can access it without stale closure
   const sessionRef = useRef(null);
 
   const loadHousehold = async (householdId) => {
-    const { data } = await fetchHousehold(householdId);
-    setHousehold(data || null);
+    const [{ data: hh }, { data: members }] = await Promise.all([
+      fetchHousehold(householdId),
+      fetchHouseholdMembers(householdId),
+    ]);
+    setHousehold(hh || null);
+    setHouseholdMembers(members || []);
   };
 
   const loadProfile = async (user) => {
@@ -67,14 +73,19 @@ export function AuthProvider({ children }) {
       if (session?.user) loadProfile(session.user);
     });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'PASSWORD_RECOVERY') {
+        setIsPasswordRecovery(true);
+      }
       sessionRef.current = session;
       setSession(session);
       if (session?.user) {
         loadProfile(session.user);
       } else {
+        setIsPasswordRecovery(false);
         setProfile(null);
         setHousehold(null);
+        setHouseholdMembers([]);
         setProfileLoading(false);
       }
     });
@@ -102,10 +113,12 @@ export function AuthProvider({ children }) {
 
   const resetPassword = async (email) => {
     const { data, error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${window.location.origin}/?reset=1`,
+      redirectTo: window.location.origin + "/",
     });
     return { data, error };
   };
+
+  const clearPasswordRecovery = () => setIsPasswordRecovery(false);
 
   const updatePassword = async (newPassword) => {
     const { data, error } = await supabase.auth.updateUser({ password: newPassword });
@@ -130,8 +143,11 @@ export function AuthProvider({ children }) {
     profile,
     household,
     householdId: household?.id ?? null,
+    householdMembers,
     loading: session === undefined,
     profileLoading,
+    isPasswordRecovery,
+    clearPasswordRecovery,
     refreshProfile,
     setHousehold,
     signUp,
