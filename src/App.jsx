@@ -233,9 +233,22 @@ function App() {
       localStorage.removeItem("catLimits");
     }
 
-    // --- extra partner names from settings ---
-    const partnerNames = map["partner_names"] ? JSON.parse(map["partner_names"]) : [];
-    setExtraMembers((partnerNames || []).map((n, idx) => ({ id: `extra-${idx}`, display_name: n })));
+    // --- extra partner names (localStorage primary, DB secondary) ---
+    const lsKey = `spendly_extra_members_${householdId}`;
+    let partnerNames = [];
+    try { partnerNames = JSON.parse(localStorage.getItem(lsKey) || "[]"); } catch {}
+    // DB overrides localStorage if it has data (enables cross-device sync when DB schema is ready)
+    const dbRaw = map["partner_names"];
+    if (dbRaw) {
+      try {
+        const dbNames = JSON.parse(dbRaw);
+        if (Array.isArray(dbNames) && dbNames.length > 0) {
+          partnerNames = dbNames;
+          localStorage.setItem(lsKey, JSON.stringify(dbNames)); // keep in sync
+        }
+      } catch {}
+    }
+    setExtraMembers(partnerNames.map((n, idx) => ({ id: `extra-${idx}`, display_name: n })));
   };
 
   // Persist budget to household_budgets + local state
@@ -248,6 +261,9 @@ function App() {
   // Save extra (non-account) household member names to settings
   const saveExtraMembers = async (names) => {
     setExtraMembers(names.map((n, idx) => ({ id: `extra-${idx}`, display_name: n })));
+    // localStorage is the guaranteed-reliable store
+    localStorage.setItem(`spendly_extra_members_${householdId}`, JSON.stringify(names));
+    // Also try DB for cross-device sync (best-effort — may silently fail if schema not migrated)
     await upsertSetting("partner_names", names);
   };
 

@@ -24,7 +24,12 @@ export default function ForgotPassword({ onBack, isResetMode: isResetModeProp })
     const { error: authError } = await resetPassword(email.trim());
     setLoading(false);
     if (authError) {
-      setError(authError.message);
+      const msg = authError.message?.toLowerCase() || "";
+      if (msg.includes("rate limit") || msg.includes("too many") || msg.includes("exceeded")) {
+        setError("Too many reset attempts. Please wait a few minutes before trying again.");
+      } else {
+        setError(authError.message);
+      }
     } else {
       setSent(true);
     }
