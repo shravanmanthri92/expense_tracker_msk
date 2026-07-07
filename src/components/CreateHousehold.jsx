@@ -18,7 +18,7 @@ export default function CreateHousehold() {
     const { error: createError } = await createHousehold({ name, userId: user.id });
 
     if (createError) {
-      setError("Could not create household. Please try again.");
+      setError(`Could not create household: ${createError.message || createError.code || "unknown error"}`);
       setLoading(false);
       return;
     }

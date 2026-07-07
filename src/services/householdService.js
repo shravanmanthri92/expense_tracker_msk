@@ -5,22 +5,25 @@ import { supabase } from "../supabaseClient";
  * Returns { data: household, error }.
  */
 export async function createHousehold({ name, userId }) {
-  const { data: household, error: hError } = await supabase
+  // Pre-generate the ID so we don't need a SELECT after INSERT.
+  // The SELECT policy would fail for new users (no household_id in profile yet),
+  // so chaining .select().single() on INSERT would return null and look like an error.
+  const newId = crypto.randomUUID();
+
+  const { error: hError } = await supabase
     .from("households")
-    .insert({ name: name.trim(), created_by: userId })
-    .select()
-    .single();
+    .insert({ id: newId, name: name.trim(), created_by: userId });
 
   if (hError) return { data: null, error: hError };
 
   const { error: pError } = await supabase
     .from("profiles")
-    .update({ household_id: household.id, updated_at: new Date().toISOString() })
+    .update({ household_id: newId, updated_at: new Date().toISOString() })
     .eq("id", userId);
 
   if (pError) return { data: null, error: pError };
 
-  return { data: household, error: null };
+  return { data: { id: newId, name: name.trim(), created_by: userId }, error: null };
 }
 
 /**
